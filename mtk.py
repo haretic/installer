@@ -49,6 +49,15 @@ CMDS_HELP = {
 }
 
 
+def parse_emmc_cid(value):
+    """An explicit full eMMC CID, never a VID/PID, prefix, or cached identity."""
+    if (type(value) is not str or len(value) != 32 or
+            any(c not in "0123456789abcdefABCDEF" for c in value) or
+            bytes.fromhex(value) in (bytes(16), b"\xff" * 16)):
+        raise argparse.ArgumentTypeError("expected eMMC CID must be 32 nonblank hex digits")
+    return value.lower()
+
+
 # ================== Argument Groups ==================
 
 def add_connection_group(parser):
@@ -150,6 +159,10 @@ def main():
         cmd_parsers[cmd] = add_common_flash_cmd(
             subparsers, cmd, CMDS_HELP.get(cmd, cmd), base
         )
+        if cmd in ("gpt", "r", "w"):
+            cmd_parsers[cmd].add_argument(
+                "--expected-emmc-cid", type=parse_emmc_cid,
+                help="Require this freshly queried XFlash eMMC CID before dispatch")
 
     # Specific positional/required arguments
     # Read partition(s)

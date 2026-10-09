@@ -4,6 +4,8 @@
 import logging
 import time
 import os
+import stat
+import tempfile
 import sys
 from binascii import hexlify
 from struct import pack, unpack
@@ -692,7 +694,8 @@ class DAXFlash(metaclass=LogBase):
                 param = pack("<IIQQ", storage, parttype, addr, size)
                 param += pack("<IIIIIIII", ne.cellusage, ne.addr_type, ne.bin_type, ne.region,
                               ne.format_level, ne.sys_slc_percent, ne.usr_slc_percent, ne.phy_max_size)
-                self.send_param(param)
+                if self.send_param(param) is not True:
+                    return False
                 status = self.status()
                 if status == 0x0:
                     return True
@@ -700,107 +703,180 @@ class DAXFlash(metaclass=LogBase):
                 self.error(f"Error on reading data: {self.eh.status(status)}")
         return False
 
-    def readflash(self, addr, length, filename, parttype=None, display=True) -> (bytes, bool):
-        partinfo = self.daconfig.storage.get_storage(parttype, length)
-        rq = None
-        buffer = None
-        if filename:
-            if not partinfo:
-                return False
-            rq = Queue(maxsize=32)
-            worker = Thread(target=writedata, args=(filename, rq), daemon=True)
-            worker.start()
-        else:
-            if not partinfo:
-                return b""
-            buffer = bytearray()
-        storage, parttype, length = partinfo
-        pg = progress(total=length, prefix="Read:", guiprogress=self.mtk.config.guiprogress)
-        # Get optimal packet sizes
-        plen = self.get_packet_length()
-        read_packet_length = plen.read_packet_length if plen else 0x100000  # fallback 1MB
-        max_usb_packet = self.mtk.port.cdc.EP_IN.wMaxPacketSize
-        bytesread = 0
+    @staticmethod
+    def _readflash_destination(filename):
+        """Admit ordinary paths only; published dumps are private mode 0600.
+
+        Replacement does not preserve the old inode, owner, ACLs or mode.
+        This is not a sandbox against concurrent directory/file replacement.
+        """
+        filename = os.fspath(filename)
+        if not isinstance(filename, str) or not filename or ".." in filename.split(os.sep):
+            raise ValueError("Read destination must be an ordinary path without '..'")
+        destination = os.path.abspath(filename)
+        parent = os.path.dirname(destination)
+        current = os.path.sep
+        for component in parent.split(os.path.sep):
+            if component:
+                current = os.path.join(current, component)
+                if not stat.S_ISDIR(os.lstat(current).st_mode):
+                    raise ValueError("Read destination parents must be non-symlink directories")
         try:
-            if self.cmd_read_data(addr=addr, size=length, storage=storage, parttype=parttype):
-                bytestoread = length
-                while bytestoread > 0:
-                    status = self.usbread(12, maxtimeout=5000)
-                    if len(status) != 12:
-                        self.error(f"Timeout or short read on header at {hex(bytesread)}")
-                        break
-                    magic, _, slength = unpack("<III", status)
-                    if magic != 0xFEEEEEEF:
-                        self.error(f"Invalid magic in data packet: {hex(magic)}")
-                        break
-                    remaining = slength
-                    chunk_buffer = bytearray()
-                    while remaining > 0:
-                        # Read as much as possible in one USB transaction
-                        to_read = min(remaining, read_packet_length, 0x400000)  # cap at 4MB chunks
-                        data = self.usbread(to_read, w_max_packet_size=remaining)
-                        if not data:
-                            self.error("USB read failed mid-packet")
-                            raise IOError("USB read failure")
-                        chunk_buffer.extend(data)
-                        remaining -= len(data)
-                    if slength > 4:
-                        if filename:
-                            rq.put(bytes(chunk_buffer))
-                        else:
-                            buffer.extend(chunk_buffer)
-                        self.ack(rstatus=False)
-                        ld = len(chunk_buffer)
-                        bytestoread -= ld
-                        bytesread += ld
-                        if display:
-                            pg.update(ld)
-                    elif slength == 4:
-                        flag = unpack("<I", chunk_buffer)[0]
-                        if flag != 0:
-                            self.error("Read completed with error status")
-                            break
-                    else:
-                        print("Error: Invalid slength")
-                        break
-            # Final acknowledge
-            status = self.usbread(12, maxtimeout=5000)
-            magic, _, slength = unpack("<III", status)
-            if magic == 0xFEEEEEEF:
-                resdata = self.usbread(slength, w_max_packet_size=slength)
-                if slength == 4:
-                    if unpack("<I", resdata)[0] != 0:
-                        self.error("Read completed with error status")
+            info = os.lstat(destination)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Read destination must be absent or a regular single-link file")
+        return destination
+
+    def readflash(self, addr, length, filename, parttype=None, display=True) -> (bytes, bool):
+        cdc = self.mtk.port.cdc
+        if hasattr(cdc, "check_io"):
+            cdc.check_io()
+        partinfo = self.daconfig.storage.get_storage(parttype, length)
+        if not isinstance(partinfo, (tuple, list)) or len(partinfo) != 3:
+            raise ValueError("No valid storage selection for read")
+        storage, parttype, length = partinfo
+        if (type(storage) is not int or not 0 <= storage <= 0xffffffff or
+                type(parttype) is not int or not 0 <= parttype <= 0xffffffff or
+                type(length) is not int or not 0 < length <= 0xffffffffffffffff or
+                type(addr) is not int or not 0 <= addr <= 0xffffffffffffffff):
+            raise ValueError("Invalid selected read range or storage")
+
+        stream = None
+        temporary = None
+        temporary_fd = None
+        protocol_started = False
+        terminal_validated = False
+        buffer = bytearray() if not filename else None
+        try:
             if filename:
-                rq.put(None)
-                worker.join(timeout=30)
+                destination = self._readflash_destination(filename)
+                temporary_fd, temporary = tempfile.mkstemp(
+                    prefix="." + os.path.basename(destination) + ".", suffix=".tmp",
+                    dir=os.path.dirname(destination))
+                os.fchmod(temporary_fd, 0o600)
+                stream = os.fdopen(temporary_fd, "wb", buffering=0)
+                temporary_fd = None
+            pg = progress(total=length, prefix="Read:", guiprogress=self.mtk.config.guiprogress)
+            protocol_started = True
+            plen = self.get_packet_length()
+            if hasattr(cdc, "check_io"):
+                cdc.check_io()
+            read_packet_length = getattr(plen, "read_packet_length", None)
+            if type(read_packet_length) is not int or read_packet_length <= 0:
+                raise IOError("Invalid or unavailable read packet length")
+            if self.cmd_read_data(addr=addr, size=length, storage=storage, parttype=parttype) is not True:
+                raise IOError("Read command failed")
+            if hasattr(cdc, "check_io"):
+                cdc.check_io()
+            bytesread = 0
+            last_status_offset = None
+            while bytesread < length:
+                header = self.usbread(12, maxtimeout=5000)
+                if len(header) != 12:
+                    raise IOError("Incomplete read data header")
+                magic, _, slength = unpack("<III", header)
+                if magic != 0xFEEEEEEF:
+                    raise IOError("Invalid read data magic")
+                if slength == 4:
+                    # The observed eMMC sector-read protocol sends raw-zero
+                    # status frames before/between data. Never count them as data.
+                    # Other read shapes retain the four-byte ambiguity rejection.
+                    if storage != 1 or addr % 512 or length % 512 or bytesread % 512:
+                        raise IOError(f"Ambiguous four-byte frame at {bytesread}/{length} bytes outside sector read")
+                    # At most one status at each aligned byte offset. Data must
+                    # advance before another: at most length/512 statuses total.
+                    if last_status_offset == bytesread:
+                        raise IOError(f"Repeated four-byte status at {bytesread}/{length} bytes")
+                    last_status_offset = bytesread
+                    status = self.usbread(4, w_max_packet_size=4)
+                    if len(status) != 4 or unpack("<I", status)[0] != 0:
+                        raise IOError(f"Read intermediate status is not raw zero at {bytesread}/{length} bytes (frame length 4)")
+                    continue
+                if slength < 4:
+                    raise IOError(f"Invalid read data length {slength} at {bytesread}/{length} bytes")
+                if slength > length - bytesread:
+                    raise IOError("Read frame exceeds selected remaining length")
+                remaining = slength
+                while remaining:
+                    to_read = min(remaining, read_packet_length, 0x400000)
+                    data = self.usbread(to_read, w_max_packet_size=remaining)
+                    if len(data) != to_read:
+                        raise IOError("Incomplete or oversized read data chunk")
+                    if stream is not None:
+                        written = stream.write(data)
+                        if type(written) is not int or written != to_read:
+                            raise IOError("Short local dump write")
+                    else:
+                        buffer.extend(data)
+                    remaining -= to_read
+                    bytesread += to_read
+                if self.ack(rstatus=False) is not True:
+                    raise IOError("Read acknowledgement failed")
+                if hasattr(cdc, "check_io"):
+                    cdc.check_io()
                 if display:
-                    pg.done()
-                if worker.is_alive():
-                    self.warning("Writer thread didn't finish cleanly")
-                    return False
+                    pg.update(slength)
+
+            header = self.usbread(12, maxtimeout=5000)
+            if len(header) != 12:
+                raise IOError("Incomplete read terminal header")
+            magic, _, slength = unpack("<III", header)
+            if magic != 0xFEEEEEEF or slength != 4:
+                raise IOError("Invalid read terminal frame")
+            status = self.usbread(4, w_max_packet_size=4)
+            if len(status) != 4 or unpack("<I", status)[0] != 0:
+                raise IOError("Read terminal status is not raw zero")
+            terminal_validated = True
+
+            if stream is not None:
+                stream.flush()
+                if os.fstat(stream.fileno()).st_size != length:
+                    raise IOError("Local dump size differs from selected length")
+                stream.close()
+                stream = None
+            if display:
+                pg.done()
+            if filename:
+                # Recheck ordinary-path admission before replacing. This does not
+                # make path admission atomic against a hostile concurrent writer.
+                self._readflash_destination(destination)
+                os.replace(temporary, destination)
+                temporary = None
                 return True
-            else:
-                if display:
-                    pg.done()
-                return buffer
-        except Exception as e:
-            self.error(f"Exception during readflash: {str(e)}")
+            return buffer
+        except BaseException as error:
+            if protocol_started and not terminal_validated:
+                if hasattr(cdc, "check_io"):
+                    try:
+                        cdc.check_io()
+                    except Exception as transport_error:
+                        # Preserve an original USB failure, including its detail.
+                        if isinstance(error, type(transport_error)):
+                            raise error
+                        raise transport_error from error
+                if hasattr(cdc, "_io_fail"):
+                    cdc._io_fail("XFlash read incomplete: " + str(error))
+            raise
         finally:
-            if filename and 'rq' in locals():
+            # Only owned temporary state is cleaned; never remove the destination.
+            if stream is not None:
                 try:
-                    rq.put(None, timeout=1)
-                except Exception:
+                    stream.close()
+                except BaseException:
                     pass
-                if 'worker' in locals():
-                    worker.join(timeout=10)
-        # Cleanup on failure
-        if filename:
-            rq.put(None)
-            worker.join(timeout=10)
-        if display:
-            pg.done()
-        return buffer if filename == "" else False
+            if temporary_fd is not None:
+                try:
+                    os.close(temporary_fd)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     class ShutDownModes:
         NORMAL = 0
@@ -880,6 +956,9 @@ class DAXFlash(metaclass=LogBase):
                 status = self.status()
                 if status == 0x0:
                     self.send_devctrl(self.cmd.CC_OPTIONAL_DOWNLOAD_ACT)
+                    # xread may have caught a USB exception inside send_devctrl.
+                    if hasattr(self.mtk.port.cdc, "check_io"):
+                        self.mtk.port.cdc.check_io()
                     if display:
                         pg.done()
                     if fh:
@@ -892,6 +971,9 @@ class DAXFlash(metaclass=LogBase):
                 self.error(str(e))
                 if fh:
                     fh.close()
+                # The CLI ignores some False returns; transport failure must escape.
+                if hasattr(self.mtk.port.cdc, "check_io"):
+                    self.mtk.port.cdc.check_io()
                 return False
         if fh:
             fh.close()

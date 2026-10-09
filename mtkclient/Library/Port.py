@@ -50,6 +50,9 @@ class Port(metaclass=LogBase):
             self.__logger.setLevel(logging.INFO)
 
     def run_serial_handshake(self):
+        # USB bulk failure is terminal even when a protocol caller caught it.
+        if hasattr(self.cdc, "check_io"):
+            self.cdc.check_io()
         try:  # Support for serial port where ep_out is unknown
             if hasattr(self.cdc, 'ep_out'):
                 ep_out = self.cdc.EP_OUT.write
@@ -85,6 +88,9 @@ class Port(metaclass=LogBase):
         return False
 
     def serial_handshake(self, maxtries=None, loop=0):
+        # USB bulk failure is terminal even when a protocol caller caught it.
+        if hasattr(self.cdc, "check_io"):
+            self.cdc.check_io()
         counter = 0
         if not self.cdc.connected:
             self.cdc.connected = self.cdc.connect()
@@ -126,6 +132,9 @@ class Port(metaclass=LogBase):
         return False
 
     def run_handshake(self, retries=5):
+        # USB bulk failure is terminal even when a protocol caller caught it.
+        if hasattr(self.cdc, "check_io"):
+            self.cdc.check_io()
         ep_out = self.cdc.EP_OUT.write
         ep_in = self.cdc.EP_IN.read
         maxinsize = self.cdc.EP_IN.wMaxPacketSize
@@ -173,6 +182,9 @@ class Port(metaclass=LogBase):
         return False
 
     def handshake(self, maxtries=None, loop=0):
+        # USB bulk failure is terminal even when a protocol caller caught it.
+        if hasattr(self.cdc, "check_io"):
+            self.cdc.check_io()
         counter = 0
 
         while not self.cdc.connected:
