@@ -13,6 +13,7 @@ import time
 from . import r1
 
 PIECE = 8 << 20
+SECTOR = 512
 # TOPRGU WDT_SWRST: the r1 resets into a normal boot. The DA's own shutdown hangs or powers the
 # r1 off instead.
 WDT_SWRST, WDT_KEY = 0x10007014, 0x1209
@@ -48,7 +49,28 @@ class _Log(logging.Handler):
             pass
 
 
-class MtkDevice:
+class _Sectors:
+    """Reads and writes of any span over storage that only moves whole sectors: a read
+    widens to the sectors around it, a partial write reads them, changes its bytes and
+    writes them back."""
+
+    def read(self, area, offset, length):
+        start = offset - offset % SECTOR
+        end = -(-(offset + length) // SECTOR) * SECTOR
+        data = self._read(area, start, end - start)
+        return data[offset - start:offset - start + length]
+
+    def write(self, offset, data):
+        start = offset - offset % SECTOR
+        end = -(-(offset + len(data)) // SECTOR) * SECTOR
+        if start != offset or end != offset + len(data):
+            block = bytearray(self._read('user', start, end - start))
+            block[offset - start:offset - start + len(data)] = data
+            data = bytes(block)
+        self._write(start, data)
+
+
+class MtkDevice(_Sectors):
     """A real r1 in preloader or boot ROM mode, driven by mtkclient's XFlash download agent."""
 
     def __init__(self, workdir, log=lambda line: None):
@@ -118,7 +140,7 @@ class MtkDevice:
                          'boot2_size': emmc.boot2_size}
         return self.identity
 
-    def read(self, area, offset, length):
+    def _read(self, area, offset, length):
         try:
             data = self.mtk.daloader.readflash(addr=offset, length=length, filename='',
                                                parttype=area, display=False)
@@ -130,7 +152,7 @@ class MtkDevice:
             raise DeviceError('Reading the r1 failed: it returned too little. Check the cable.')
         return bytes(data)
 
-    def write(self, offset, data):
+    def _write(self, offset, data):
         try:
             ok = self.mtk.daloader.writeflash(addr=offset, length=len(data), filename='',
                                               wdata=data, parttype='user', display=False)
@@ -178,7 +200,7 @@ class MtkDevice:
             self.mtk = None
 
 
-class SimDevice:
+class SimDevice(_Sectors):
     """A simulated r1: its storage in sparse files. Built from the real r1 GPT and stock-like
     contents; for tests, demos and screenshots. Speed and failures can be injected."""
 
@@ -231,14 +253,17 @@ class SimDevice:
         if self.rate:
             time.sleep(n / self.rate)
 
-    def read(self, area, offset, length):
+    def _read(self, area, offset, length):
+        # As strict as the r1's download agent: whole sectors only
+        assert offset % SECTOR == 0 and length % SECTOR == 0, (offset, length)
         self._pace(length)
         with open(self.files[area], 'rb') as f:
             f.seek(offset)
             data = f.read(length)
         return data + bytes(length - len(data))
 
-    def write(self, offset, data):
+    def _write(self, offset, data):
+        assert offset % SECTOR == 0 and len(data) % SECTOR == 0, (offset, len(data))
         self._pace(len(data))
         with open(self.files['user'], 'r+b') as f:
             f.seek(offset)

@@ -85,7 +85,7 @@ jobs:
           flatpak install --user --noninteractive flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.flatpak.Builder
           rm -rf build/flatpak-input && mkdir -p build/flatpak-input
           cp -a build/dist/haretic-installer build/flatpak-input/
-          flatpak run --user org.flatpak.Builder --user --force-clean --repo=build/flatpak-repo build/flatpak packaging/io.github.haretic.installer.yml
+          flatpak run --user org.flatpak.Builder --user --install-deps-from=flathub --force-clean --repo=build/flatpak-repo build/flatpak packaging/io.github.haretic.installer.yml
           flatpak build-bundle build/flatpak-repo "dist/haretic-installer-${VERSION}-linux-${ARCH}.flatpak" io.github.haretic.installer
       - name: Windows setup and portable
         if: matrix.target == 'windows'

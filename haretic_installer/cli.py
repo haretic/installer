@@ -55,8 +55,10 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-v', '--verbose', action='store_true', help="show mtkclient's log")
     sub = ap.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('check')
+    c = sub.add_parser('check')
+    c.add_argument('--no-boot', action='store_true', help='leave the r1 in download mode')
     b = sub.add_parser('backup')
+    b.add_argument('--no-boot', action='store_true', help='leave the r1 in download mode')
     b.add_argument('--backups', default=paths.backups())
     b.add_argument('--userdata', action='store_true')
     i = sub.add_parser('install')
@@ -86,16 +88,13 @@ def main(argv=None):
         print(f'\nrabbit r1: {info.identity["user_size"] / 1e9:.0f} GB, runs {info.system} on slot '
               f'{info.slot.upper()}, bootloader {info.lock}, loaders A {info.lk["a"]} / B {info.lk["b"]}'
               + (f', unlockable ({info.seccfg_type})' if info.seccfg_type else ''))
-        if args.cmd == 'check':
-            return 0
         if args.cmd == 'backup':
             print('Backup saved in', s.backup(args.backups, args.userdata))
-            return 0
-        if args.cmd == 'restore':
+        elif args.cmd == 'restore':
             if not confirm('This writes the backup back over everything haretic changed.', args.yes):
                 return 1
             s.restore(args.folder)
-        else:
+        elif args.cmd == 'install':
             mode = 'update' if args.update else 'clean'
             found = flow.backups(args.backups, info.identity['cid'])
             folder = found[0][0] if found else s.backup(args.backups)
@@ -108,7 +107,8 @@ def main(argv=None):
             print('\nDone; the r1 stays in download mode.')
             return 0
         s.boot()
-        print('\nDone. The r1 is starting; the first start takes a few minutes.')
+        print('\nDone. The r1 is starting' + ('; the first start takes a few minutes.'
+                                               if args.cmd == 'install' else '.'))
         return 0
     except (flow.StepError, DeviceError, r1.NotAnR1, package.PackageError) as e:
         print(f'\nStopped: {e}', file=sys.stderr)
