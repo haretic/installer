@@ -115,7 +115,8 @@ jobs:
                   for chunk in iter(lambda: f.read(1 << 20), b''):
                       h.update(chunk)
               lines.append(f'{h.hexdigest()}  {p.name}')
-          (root / 'SHA256SUMS-${{ matrix.target }}-${{ matrix.arch }}').write_text('\n'.join(lines) + '\n')
+          # newline: on Windows write_text would end every name in \r, which sha256sum can't open
+          (root / 'SHA256SUMS-${{ matrix.target }}-${{ matrix.arch }}').write_text('\n'.join(lines) + '\n', newline='\n')
           PY
       - uses: actions/upload-artifact@v4
         with:
