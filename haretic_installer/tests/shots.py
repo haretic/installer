@@ -36,7 +36,10 @@ def wait(cond, ms=2400000):
             raise SystemExit('timed out at ' + str(n[0]))
 
 
-QMessageBox.exec = lambda self: setattr(self, '_clicked', self.buttons()[0]) or 0
+# Confirm every question: the button that goes ahead, whatever order Qt lists them in
+QMessageBox.exec = lambda self: setattr(self, '_clicked', next(
+    (b for b in self.buttons() if self.buttonRole(b) in (QMessageBox.DestructiveRole, QMessageBox.AcceptRole,
+                                                         QMessageBox.YesRole)), self.buttons()[0])) or 0
 QMessageBox.clickedButton = lambda self: getattr(self, '_clicked', None)
 w.asked_release = True
 p = w.p_welcome
