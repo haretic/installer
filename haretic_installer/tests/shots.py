@@ -101,6 +101,21 @@ w.show_check()
 shot('check-haretic')
 w.p_check.go.click()
 shot('backup-haretic')
+# a newer haretic on the r1: no update keeping data, until five presses on the reason
+w.session.info.installed = {'version': 'haretic-20261201-nightly', 'aosp': False, 'gapps': True, 'root': True}
+w.show_check()
+shot('check-downgrade')
+for _ in range(5):
+    w.why_pressed(None)
+shot('check-downgrade-allowed')
+w.allow_downgrade = False
+w.session.info.installed = {'version': 'haretic-20261101-nightly', 'aosp': True, 'gapps': False, 'root': False}
+w.show_check()
+shot('check-aosp')
+w.session.info.installed = {'version': 'haretic-20261101-nightly', 'aosp': False, 'gapps': True, 'root': True}
+w.show_check()
+shot('check-variant')
+w.session.info.installed = None
 w.show_restore()
 shot('restore')
 w.show_setup('usbdk')

@@ -11,7 +11,9 @@ import hashlib
 import json
 import lzma
 import os
+import re
 import shutil
+import struct
 import tarfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +28,7 @@ XZ_BLOCK = 32 << 20
 XZ_PRESET = 6  # 9 needs 674 MB per thread
 XZ_THREADS = max(1, min(8, (os.cpu_count() or 2) - 1))
 RESTORE_LAST = ('boot_a', 'boot_b', 'para')
+VBMETA_READ = 64 << 10  # vbmeta.img is under 16 KB
 
 
 class StepError(Exception):
@@ -87,7 +90,7 @@ class Info:
     def summary(self):
         return {'cid': self.identity['cid'], 'storage_gb': round(self.identity['user_size'] / 1e9),
                 'slot': self.slot, 'lock': self.lock, 'lk_a': self.lk['a'], 'lk_b': self.lk['b'],
-                'system': self.system}
+                'system': self.system, 'installed': self.installed}
 
 
 class Session:
@@ -177,10 +180,36 @@ class Session:
             if hwtype is None:
                 raise StepError('This r1 has a lock record the installer cannot unlock. Nothing '
                                 'was changed.')
+        installed = self.installed() if lk['a'] == 'haretic' else None
         self.info = Info(identity=identity, parts=parts, gpt=raw, record=rec, slot=r1.record_slot(rec),
-                         lock=lock, lk=lk, seccfg_type=hwtype)
+                         lock=lock, lk=lk, seccfg_type=hwtype, installed=installed)
         self.rep.log('found: ' + json.dumps(self.info.summary()))
         return self.info
+
+    def installed(self):
+        """The haretic build on slot A, from its signed vbmeta: {version, aosp, gapps, root}, each None
+        where it can't tell. The build's own properties give the version, style and Google apps;
+        root is whether boot_a still matches the hash vbmeta signed, as Magisk patches it."""
+        self.rep.status('Reading which haretic is installed')
+        avb = avb_parse(self.dev.read('user', PLACE['vbmeta_a'][0], VBMETA_READ))
+        if avb is None:
+            return None
+        props, hashes = avb
+        root = None
+        if hashes.get('boot', (0, 'none'))[1] == 'sha256' and hashes['boot'][0] <= PLACE['boot_a'][1]:
+            size, _, salt, digest = hashes['boot']
+            h = hashlib.sha256(salt)
+            for at in range(0, size, PIECE):
+                h.update(self.dev.read('user', PLACE['boot_a'][0] + at, min(PIECE, size - at)))
+            root = h.digest() != digest
+        style = props.get('com.haretic.style')
+        if style is None:
+            # builds before the haretic properties: the product in the fingerprint
+            product = props.get('com.android.build.boot.fingerprint', '').split('/')[1:2]
+            style = {'haretic_r1': 'haretic', 'lineage_r1': 'aosp'}.get(product[0] if product else None)
+        gapps = props.get('com.haretic.gapps')
+        return {'version': props.get('com.haretic.version'), 'aosp': None if style is None else style == 'aosp',
+                'gapps': None if gapps is None else gapps == 'true', 'root': root}
 
     # -- 2. backup
     def backup_plan(self, include_userdata):
@@ -359,11 +388,16 @@ class Session:
                 ('the boot record (slot A)', 'para', 'record', None)]
         return ops
 
-    def install(self, pkg, mode):
+    def install(self, pkg, mode, allow_downgrade=False):
         if mode not in ('clean', 'update'):
             raise ValueError(mode)
         if mode == 'update' and (self.info.slot != 'a' or self.info.lk['a'] != 'haretic'):
             raise StepError('This r1 does not run haretic, so it needs a clean install.')
+        if mode == 'update':
+            for kind, text in update_problems(self.info.installed, pkg):
+                if kind == 'refuse' or kind == 'downgrade' and not allow_downgrade:
+                    raise StepError(text + ' Nothing was changed.')
+                self.rep.log(f'update: {text}')
         if self.info.lock != 'unlocked':
             raise StepError('The bootloader is still locked.')
         ops = self.install_plan(pkg, mode)
@@ -505,6 +539,63 @@ def add(tar, name, size, chunks):
     info.size = size
     info.mode = 0o644
     tar.addfile(info, _Chunks(chunks))
+
+
+def avb_parse(data):
+    """A vbmeta image's properties and hash descriptors: ({key: value}, {partition: (image size,
+    algorithm, salt, digest)}); None if it is not one."""
+    if len(data) < 256 or data[:4] != b'AVB0':
+        return None
+    auth, aux = struct.unpack_from('>QQ', data, 12)
+    at, size = struct.unpack_from('>QQ', data, 96)
+    at += 256 + auth
+    end = at + size
+    if size > aux or end > len(data):
+        return None
+    props, hashes = {}, {}
+    while at + 16 <= end:
+        tag, n = struct.unpack_from('>QQ', data, at)
+        body = data[at + 16:at + 16 + n]
+        if tag == 0 and len(body) >= 16:
+            kn, vn = struct.unpack_from('>QQ', body)
+            props[body[16:16 + kn].decode('utf-8', 'replace')] = body[17 + kn:17 + kn + vn].decode('utf-8', 'replace')
+        elif tag == 2 and len(body) >= 116:
+            image, algo = struct.unpack_from('>Q32s', body)
+            pn, sn, dn = struct.unpack_from('>III', body, 40)
+            name = body[116:116 + pn].decode('utf-8', 'replace')
+            salt = body[116 + pn:116 + pn + sn]
+            hashes[name] = (image, algo.rstrip(b'\0').decode(), salt, body[116 + pn + sn:116 + pn + sn + dn])
+        at += 16 + n
+    return props, hashes
+
+
+def version_date(version):
+    m = re.match(r'^haretic-(\d{8})-', version or '')
+    return m and m.group(1)
+
+
+def update_problems(installed, pkg):
+    """What goes wrong if pkg updates the installed haretic and keeps data: [(kind, text)], kind
+    'refuse' (needs a clean install), 'downgrade' (refused unless allowed) or 'warn'."""
+    if not installed:
+        return []
+    out = []
+    name = {True: 'plain LineageOS (aosp)', False: 'haretic'}
+    if installed['aosp'] is not None and installed['aosp'] != pkg.aosp:
+        out.append(('refuse', f'This r1 runs {name[installed["aosp"]]} and the package is {name[pkg.aosp]}. '
+                              'They cannot share apps and data, so changing between them needs a clean install.'))
+    old, new = version_date(installed['version']), version_date(pkg.version)
+    if old and new and new < old:
+        out.append(('downgrade', f'This r1 runs {installed["version"]}, newer than {pkg.version}. Going '
+                                 'back while keeping data can leave settings and apps the older version '
+                                 'cannot read, and the r1 may not start. A clean install of it is safe.'))
+    if installed['gapps'] is not None and installed['gapps'] != pkg.gapps:
+        out.append(('warn', 'Google apps are removed: apps that need them stop working.' if installed['gapps']
+                    else 'Google apps are added. Apps installed before may need signing in again.'))
+    if installed['root'] is not None and installed['root'] != pkg.root:
+        out.append(('warn', 'Root (Magisk) is removed: apps that need it stop working, and Magisk modules '
+                            'stay but do nothing.' if installed['root'] else 'Root (Magisk) is added.'))
+    return out
 
 
 def restore_order(manifest):

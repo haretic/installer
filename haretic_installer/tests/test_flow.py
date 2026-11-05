@@ -40,9 +40,28 @@ def sparse_image(path, total, runs):
         f.write(b''.join(chunks))
 
 
+def vbmeta(boot, version='haretic-20261105-beta', style='haretic', gapps='false', size=65536):
+    """A vbmeta image as avbtool makes it, unsigned: the haretic properties and boot's hash."""
+    def desc(tag, body):
+        body += bytes(-len(body) % 8)
+        return struct.pack('>QQ', tag, len(body)) + body
+    descs = b''
+    for k, v in (('com.haretic.version', version), ('com.haretic.style', style), ('com.haretic.gapps', gapps)):
+        descs += desc(0, struct.pack('>QQ', len(k), len(v)) + k.encode() + b'\0' + v.encode() + b'\0')
+    salt = os.urandom(32)
+    image = len(boot) - 4096
+    digest = hashlib.sha256(salt + boot[:image]).digest()
+    descs += desc(2, struct.pack('>Q32sIIII60s', image, b'sha256', 4, 32, 32, 0, bytes(60)) + b'boot' + salt + digest)
+    aux = descs + bytes(-len(descs) % 64)
+    head = struct.pack('>4sIIQQIQQQQQQQQQQQII48s80s', b'AVB0', 1, 0, 0, len(aux), 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, len(descs), 0, 1, 0, b'avbtool 1.3.0', bytes(80))
+    return head + aux + bytes(size - len(head) - len(aux))
+
+
 def make_package(folder):
+    boot = b'ANDROID!' + os.urandom(0x2000000 - 8)
     files = {'lk': LK, 'logo': os.urandom(1460109), 'dtbo': os.urandom(0x800000),
-             'vbmeta': os.urandom(65536), 'boot': b'ANDROID!' + os.urandom(0x2000000 - 8)}
+             'vbmeta': vbmeta(boot), 'boot': boot}
     paths = {}
     for key, name, _ in package.IMAGES:
         paths[key] = os.path.join(folder, name)
@@ -183,6 +202,47 @@ class Flow(unittest.TestCase):
         self.assertTrue(os.path.basename(own).startswith('r1-haretic-backup-'))
         root = os.path.join(self.dir, 'backups')
         self.assertEqual([f for f, _ in backups(root, s2.info.identity['cid'], 'rabbitOS')], [stock])
+
+    def haretic_r1(self, boot, **props):
+        """A simulated r1 already running haretic on slot A, its vbmeta made with props."""
+        dev = SimDevice(os.path.join(self.dir, 'r1'))
+        s = Session(dev, Log())
+        identity = s.connect(lambda st: None)
+        for name, data in (('lk_a', LK), ('boot_a', boot), ('vbmeta_a', vbmeta(self.files['boot'], **props))):
+            dev.write(PLACE[name][0], data)
+        s.inspect(identity)
+        s.info.lock = 'unlocked'
+        return s, dev
+
+    def test_avb_matches_avbtool(self):
+        avb = flow.avb_parse(self.files['vbmeta'])
+        self.assertEqual(avb[0]['com.haretic.version'], 'haretic-20261105-beta')
+        self.assertEqual(avb[1]['boot'][:2], (0x2000000 - 4096, 'sha256'))
+        self.assertIsNone(flow.avb_parse(os.urandom(4096)))
+
+    def test_update_guards(self):
+        boot = self.files['boot']
+        s, dev = self.haretic_r1(boot, version='haretic-20261201-nightly')
+        self.assertEqual(s.info.installed, {'version': 'haretic-20261201-nightly', 'aosp': False, 'gapps': False,
+                                            'root': False})
+        before = dev.read('user', PLACE['super'][0], 1 << 20)
+        with self.assertRaises(StepError):
+            s.install(self.pkg, 'update')
+        self.assertEqual(dev.read('user', PLACE['super'][0], 1 << 20), before)
+        s.install(self.pkg, 'update', allow_downgrade=True)
+        self.assertNotEqual(dev.read('user', PLACE['super'][0], 1 << 20), before)
+        # the plain LineageOS build: no override
+        s, dev = self.haretic_r1(boot, style='aosp')
+        with self.assertRaises(StepError):
+            s.install(self.pkg, 'update', allow_downgrade=True)
+        # a Magisk-patched boot and Google apps: warnings only
+        patched = bytearray(boot)
+        patched[0x1000] ^= 1
+        s, dev = self.haretic_r1(bytes(patched), gapps='true')
+        self.assertTrue(s.info.installed['root'])
+        kinds = [k for k, _ in flow.update_problems(s.info.installed, self.pkg)]
+        self.assertEqual(kinds, ['warn', 'warn'])
+        s.install(self.pkg, 'update')
 
     def test_update_refused_on_stock(self):
         s, dev = self.session()

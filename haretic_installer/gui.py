@@ -388,6 +388,9 @@ class Window(QWidget):
         self.pkg_path = None
         self.verified = False
         self.mode = 'clean'
+        self.problems = []  # what an update keeping data would change, flow.update_problems
+        self.allow_downgrade = False
+        self.why_clicks = 0
         self.restore_file = None
         self.backup_file = None
         self.cid = None
@@ -863,10 +866,17 @@ class Window(QWidget):
         p.update = QRadioButton('Update haretic and keep my data')
         p.clean = QRadioButton('Clean install: erase everything and start fresh')
         p.update.setChecked(True)
-        cl.addWidget(label('<b>This r1 already runs haretic</b>'))
+        p.runs = label('')
+        cl.addWidget(p.runs)
         cl.addWidget(p.update)
         cl.addWidget(p.clean)
         p.body.addWidget(p.choice)
+        p.why, wl = frame('warn')
+        p.why_text = label('')
+        # Five presses on a refused downgrade allow it, as Android's build number does
+        p.why_text.mousePressEvent = self.why_pressed
+        wl.addWidget(p.why_text)
+        p.body.addWidget(p.why)
         p.next = label('', 'lead')
         p.body.addWidget(p.next)
         p.go = button('Continue', 'primary')
@@ -882,27 +892,61 @@ class Window(QWidget):
         info = self.session.info
         p.error.hide()
         lk = {'haretic': 'haretic', 'stock': 'rabbitOS (v0.8.293)', 'other': 'rabbitOS'}
+        haretic = info.system == 'haretic' and info.slot == 'a'
+        running = lk[info.lk[info.slot]]
+        if haretic and info.installed:
+            i = info.installed
+            running = ', '.join([i['version'] or 'haretic'] + ['plain LineageOS (aosp)'] * bool(i['aosp'])
+                                + ['with Google apps'] * bool(i['gapps']) + ['rooted (Magisk)'] * bool(i['root']))
         rows = [('Storage', f'{info.identity["user_size"] / 1e9:.0f} GB eMMC'),
-                ('Running', f'{lk[info.lk[info.slot]]} on slot {info.slot.upper()}'),
+                ('Running', f'{running} on slot {info.slot.upper()}'),
                 ('Bootloader', 'unlocked' if info.lock == 'unlocked' else 'locked - the installer unlocks it'),
                 ('Storage ID', info.identity['cid'][:8] + '...')]
         p.facts.setText('<table cellpadding="4">' + ''.join(
             f'<tr><td style="color:#9a9a9a;padding-right:18px">{k}</td><td>{v}</td></tr>' for k, v in rows)
             + '</table>')
-        haretic = info.system == 'haretic' and info.slot == 'a'
+        self.problems = flow.update_problems(info.installed, self.pkg) if haretic and self.pkg else []
+        self.why_clicks = 0
+        blocked = self.update_blocked()
         p.choice.setVisible(haretic)
-        (p.update if haretic else p.clean).setChecked(True)
+        aosp = bool(info.installed and info.installed['aosp'])
+        p.runs.setText(f'<b>This r1 already runs {"plain LineageOS (aosp)" if aosp else "haretic"}</b>')
+        p.update.setEnabled(not blocked)
+        (p.update if haretic and not blocked else p.clean).setChecked(True)
         self.check_text()
         self.show_page(p, 2)
 
+    def update_blocked(self):
+        return any(k == 'refuse' or k == 'downgrade' and not self.allow_downgrade for k, _ in self.problems)
+
+    def update_warnings(self):
+        return [t for k, t in self.problems if k == 'warn' or k == 'downgrade' and self.allow_downgrade]
+
+    def why_pressed(self, _event):
+        kinds = {k for k, _ in self.problems}
+        if self.allow_downgrade or 'downgrade' not in kinds or 'refuse' in kinds:
+            return
+        self.why_clicks += 1
+        if self.why_clicks >= 5:
+            self.allow_downgrade = True
+            self.log('downgrade keeping data allowed')
+            self.show_check()
+            self.p_check.update.setChecked(True)
+
     def check_text(self):
         p = self.p_check
-        self.mode = 'update' if p.choice.isVisible() and p.update.isChecked() else 'clean'
+        self.mode = 'update' if not p.choice.isHidden() and p.update.isChecked() else 'clean'
+        if self.update_blocked():
+            p.why_text.setText('<b>Updating with your data kept is not possible</b><br>'
+                               + '<br>'.join(t for k, t in self.problems if k != 'warn'))
+        elif self.mode == 'update' and self.update_warnings():
+            p.why_text.setText('<b>This update changes what the r1 has</b><br>' + '<br>'.join(self.update_warnings()))
+        p.why.setVisible(self.update_blocked() or self.mode == 'update' and bool(self.update_warnings()))
         if self.mode == 'update':
             p.next.setText('Nothing has been changed so far. Next, the installer writes the new haretic '
                            'over the old one. Your apps, files and settings stay. A backup first is '
                            'optional.')
-        elif p.choice.isVisible():
+        elif not p.choice.isHidden():
             p.next.setText('Nothing has been changed so far. Next, the installer erases the r1 and installs '
                            'haretic fresh. A backup first is optional.')
         else:
@@ -1062,8 +1106,19 @@ class Window(QWidget):
         return fn(*args)
 
     def confirm_writes(self):
-        if self.mode == 'update':
+        if self.mode == 'update' and not self.update_warnings():
             return self.start_install_writes()
+        if self.mode == 'update':
+            box = QMessageBox(self)
+            box.setWindowTitle('Update and change what the r1 has?')
+            box.setText('<b>Update and change what the r1 has?</b>')
+            box.setInformativeText(' '.join(self.update_warnings()) + ' Your apps, files and settings stay.')
+            go = box.addButton('Update anyway', QMessageBox.AcceptRole)
+            box.addButton('Not now', QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is go:
+                return self.start_install_writes()
+            return self.log('update not confirmed')
         box = QMessageBox(self)
         box.setWindowTitle('Erase the r1 and install haretic?')
         box.setText('<b>Erase the r1 and install haretic?</b>')
@@ -1137,7 +1192,8 @@ class Window(QWidget):
             p.progress.status.setText('Installed')
             self.start_boot()
         self.resume = self.start_install_writes
-        self.run(lambda job: self.with_reporter(job, self.session.install, self.pkg, self.mode), ok,
+        self.run(lambda job: self.with_reporter(job, self.session.install, self.pkg, self.mode,
+                                                        self.allow_downgrade), ok,
                  p.progress, status=status)
 
     # 8. start

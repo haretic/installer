@@ -74,6 +74,7 @@ def main(argv=None):
     i.add_argument('--update', action='store_true', help='keep data (the r1 must run haretic)')
     i.add_argument('--backup', action='store_true', help='back up an r1 that already runs haretic')
     i.add_argument('--yes', action='store_true')
+    i.add_argument('--allow-downgrade', action='store_true', help=argparse.SUPPRESS)
     i.add_argument('--no-boot', action='store_true', help='leave the r1 in download mode')
     r = sub.add_parser('restore')
     r.add_argument('file')
@@ -96,6 +97,8 @@ def main(argv=None):
         print(f'\nrabbit r1: {info.identity["user_size"] / 1e9:.0f} GB, runs {info.system} on slot '
               f'{info.slot.upper()}, bootloader {info.lock}, loaders A {info.lk["a"]} / B {info.lk["b"]}'
               + (f', unlockable ({info.seccfg_type})' if info.seccfg_type else ''))
+        if info.installed:
+            print('installed: ' + ', '.join(f'{k} {v}' for k, v in info.installed.items() if v is not None))
         if args.cmd == 'backup':
             keep_safe(s.backup(args.backups, args.userdata))
         elif args.cmd == 'restore':
@@ -104,6 +107,14 @@ def main(argv=None):
             s.restore(args.file)
         elif args.cmd == 'install':
             mode = 'update' if args.update else 'clean'
+            if mode == 'update' and info.system == 'haretic':
+                problems = flow.update_problems(info.installed, pkg)
+                for kind, text in problems:
+                    if kind == 'refuse' or kind == 'downgrade' and not args.allow_downgrade:
+                        raise flow.StepError(text + ' Nothing was changed.')
+                warnings = [t for k, t in problems if k != 'refuse']
+                if warnings and not confirm(' '.join(warnings), args.yes):
+                    return 1
             stock = flow.backups(args.backups, info.identity['cid'], 'rabbitOS')
             if info.system != 'haretic':
                 keep_safe(stock[0][0] if stock else s.backup(args.backups))
