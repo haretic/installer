@@ -1,5 +1,5 @@
 """Screenshots of every installer page, driven through the real window against a simulated r1:
-python -m haretic_installer.tests.shots <out-folder> [package.zip]"""
+python -m haretic_installer.tests.shots <out-folder> [package.tar.xz]"""
 import os
 import sys
 import tempfile

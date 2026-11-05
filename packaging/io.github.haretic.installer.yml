@@ -16,7 +16,7 @@ modules:
   - name: haretic-installer
     buildsystem: simple
     build-commands:
-      - cp -a haretic-installer /app/lib/haretic-installer
+      - mkdir -p /app/lib && cp -a haretic-installer /app/lib/haretic-installer
       - mkdir -p /app/bin && ln -s ../lib/haretic-installer/haretic-installer /app/bin/haretic-installer
       - install -Dm644 io.github.haretic.installer.desktop /app/share/applications/io.github.haretic.installer.desktop
       - install -Dm644 io.github.haretic.installer.svg /app/share/icons/hicolor/scalable/apps/io.github.haretic.installer.svg
