@@ -1,13 +1,20 @@
 """The installer's steps, without a UI: check the r1, back it up, unlock it, install haretic, boot.
 Each step reports through a Reporter and can be stopped between pieces; every write is read back.
+
+A backup is read into a folder of gzipped partitions, which a pulled cable can resume, then packed
+into one .tar.xz and checked: the restore file. The one made of rabbitOS is the only way back.
 """
+import collections
 import datetime
 import gzip
 import hashlib
 import json
+import lzma
 import os
 import shutil
+import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from . import r1, sparse
 from .device import Cancelled, PIECE
@@ -15,6 +22,10 @@ from .device import Cancelled, PIECE
 PLACE = {n: (o, s) for n, o, s in r1.LAYOUT}
 GPT_BYTES = 34 * r1.SECTOR
 BACKUP_FREE = 12 << 30  # rabbitOS backs up to about 4-6 GB; leave room
+XZ_BLOCK = 32 << 20
+XZ_PRESET = 6  # 9 needs 674 MB per thread
+XZ_THREADS = max(1, min(8, (os.cpu_count() or 2) - 1))
+RESTORE_LAST = ('boot_a', 'boot_b', 'para')
 
 
 class StepError(Exception):
@@ -183,10 +194,11 @@ class Session:
         return plan
 
     def backup(self, root, include_userdata=False):
-        """Back up the r1 into a new or unfinished folder under root; returns the folder."""
+        """Back up the r1 into a new or unfinished folder under root, then pack it into the restore
+        file; returns the file's path."""
         cid = self.info.identity['cid']
         folder = unfinished_backup(root, cid) or os.path.join(
-            root, f'r1-backup-{cid[:8]}-{datetime.datetime.now():%Y%m%d-%H%M}')
+            root, f'r1-backup-{cid[:8]}-{datetime.datetime.now():%Y%m%d-%H%M%S}')
         os.makedirs(folder, exist_ok=True)
         plan = self.backup_plan(include_userdata)
         need = sum(p[3] for p in plan) // 2
@@ -225,8 +237,91 @@ class Session:
             write_json(path, manifest)
         manifest['complete'] = True
         write_json(path, manifest)
-        self.rep.log(f'backup complete: {folder}')
-        return folder
+        self.rep.log(f'backup read: {folder}')
+        return self.pack(folder)
+
+    def pack(self, folder):
+        """The finished backup folder as one checked .tar.xz next to it, the folder removed."""
+        manifest = read_manifest(folder)
+        stock = manifest['device']['system'] != 'haretic'
+        name = ('r1-rabbitOS-restore-' if stock else 'r1-haretic-backup-') + \
+            os.path.basename(folder).split('-', 2)[-1] + '.tar.xz'
+        out = os.path.join(os.path.dirname(folder), name)
+        held = sum(os.path.getsize(os.path.join(folder, p['file'])) for p in manifest['parts'].values())
+        free = shutil.disk_usage(folder).free
+        if free < held:
+            raise StepError(f'Packing the restore file needs about {fmt_size(held)} of space, but '
+                            f'{os.path.dirname(folder)} has {fmt_size(free)} free.',
+                            hint='Free up space, then run the backup again; what was read is kept.')
+        order = restore_order(manifest)
+        names = [n for n in manifest['parts'] if n not in order] + order
+        manifest['order'] = order
+        manifest['format'] = 'tar'
+        for n in names:
+            manifest['parts'][n]['file'] = n + '.img'
+        meta = json.dumps(manifest, indent=1).encode()
+        total = sum(manifest['parts'][n]['size'] for n in names)
+        self.begin(total, 'Packing the restore file')
+        tmp = out + '.part'
+        try:
+            with open(tmp, 'wb') as raw:
+                xz = XzBlocks(raw)
+                # Not tarfile's stream mode, whose write buffer is quadratic in the piece size
+                with tarfile.open(fileobj=xz, mode='w', format=tarfile.PAX_FORMAT,
+                                  copybufsize=PIECE) as tar:
+                    add(tar, 'manifest.json', len(meta), iter([meta]))
+                    for n in names:
+                        self.rep.status(f'Packing the restore file: {n}')
+                        with gzip.open(os.path.join(folder, n + '.img.gz'), 'rb') as f:
+                            add(tar, n + '.img', manifest['parts'][n]['size'], self.pieces(f))
+                xz.close()
+            self.check_archive(tmp, 'Checking the restore file')
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+        os.replace(tmp, out)
+        shutil.rmtree(folder)
+        self.rep.log(f'backup complete: {out}')
+        return out
+
+    def pieces(self, f):
+        while data := f.read(PIECE):
+            self.check()
+            self.advance(len(data))
+            yield data
+
+    def check_archive(self, path, text):
+        """Every partition in a restore file decompressed and hashed; returns its manifest."""
+        try:
+            with lzma.open(path) as raw, tarfile.open(fileobj=raw, mode='r|', bufsize=1 << 20) as tar:
+                manifest = None
+                seen = set()
+                for member in tar:
+                    f = tar.extractfile(member)
+                    if manifest is None:
+                        if member.name != 'manifest.json':
+                            raise ValueError('no manifest')
+                        manifest = json.loads(f.read())
+                        parts = {p['file']: n for n, p in manifest['parts'].items()}
+                        self.begin(sum(p['size'] for p in manifest['parts'].values()), text)
+                        continue
+                    n = parts.get(member.name)
+                    if n is None or member.size != manifest['parts'][n]['size']:
+                        raise ValueError(f'unexpected {member.name}')
+                    h = hashlib.sha256()
+                    for data in self.pieces(f):
+                        h.update(data)
+                    if h.hexdigest() != manifest['parts'][n]['sha256']:
+                        raise ValueError(f'{n} differs')
+                    seen.add(n)
+        except (OSError, EOFError, ValueError, KeyError, tarfile.TarError, lzma.LZMAError) as e:
+            raise StepError(f'The restore file {os.path.basename(path)} is damaged ({e}).',
+                            hint='Copy it again from where you keep it.')
+        if manifest is None or seen != set(manifest['parts']):
+            raise StepError(f'The restore file {os.path.basename(path)} is incomplete.',
+                            hint='Copy it again from where you keep it.')
+        return manifest
 
     # -- 3. unlock
     def unlock(self):
@@ -313,50 +408,145 @@ class Session:
         self.dev.reboot()
 
     # -- restore
-    def restore(self, folder):
-        manifest = json.load(open(os.path.join(folder, 'manifest.json')))
+    def restore(self, path):
+        """Write a restore file back: the whole file is checked first, then written in its order,
+        the boot images and the boot record last."""
+        manifest = archive_manifest(path)
+        if manifest is None:
+            raise StepError('That is not an r1 restore file.')
         if manifest['device']['cid'] != self.info.identity['cid']:
-            raise StepError('This backup is from a different r1.')
-        if not manifest.get('complete'):
-            raise StepError('This backup is unfinished.')
-        skip = {'gpt', 'gpt_backup', 'boot1', 'boot2'} | set(r1.NEVER_WRITTEN)
-        names = [n for n, p in manifest['parts'].items() if n not in skip and p['area'] == 'user']
-        last = [n for n in ('boot_a', 'boot_b', 'para') if n in names]
-        names = [n for n in names if n not in last] + last
-        self.begin(sum(2 * manifest['parts'][n]['size'] for n in names), 'Restoring')
-        for name in names:
+            raise StepError('This restore file is from a different r1.')
+        order = restore_order(manifest)
+        if manifest.get('order') != order:
+            raise StepError('This restore file was not made by this installer.')
+        for name in order:
             p = manifest['parts'][name]
             if PLACE.get(name, (p['offset'], p['size'])) != (p['offset'], p['size']) \
                     and name not in self.info.parts:
                 raise StepError(f'The backup of {name} does not fit this r1.')
-            self.rep.status(f'Restoring {name}')
-            h = hashlib.sha256()
-            with gzip.open(os.path.join(folder, p['file']), 'rb') as f:
+        self.check_archive(path, 'Checking the restore file')
+        self.begin(sum(2 * manifest['parts'][n]['size'] for n in order), 'Restoring')
+        files = {manifest['parts'][n]['file']: n for n in order}
+        with lzma.open(path) as raw, tarfile.open(fileobj=raw, mode='r|', bufsize=1 << 20) as tar:
+            for member in tar:
+                name = files.get(member.name)
+                if name is None:
+                    continue
+                p = manifest['parts'][name]
+                self.rep.status(f'Restoring {name}')
+                f = tar.extractfile(member)
                 at = 0
                 while data := f.read(PIECE):
-                    h.update(data)
                     self.write(p['offset'] + at, data, name)
                     at += len(data)
-            if h.hexdigest() != p['sha256']:
-                raise StepError(f'The backup of {name} is damaged.', safe=False,
-                                hint='Copy the backup folder again from where you keep it.')
         self.rep.log('restore complete')
 
 
+class XzBlocks:
+    """A file object that xz-compresses what is written in independent blocks on several threads
+    and writes them in order: one .xz of concatenated streams, as xz -T makes, which xz, 7-Zip
+    and lzma.open all read."""
+
+    def __init__(self, out):
+        self.out = out
+        self.buf = bytearray()
+        self.pool = ThreadPoolExecutor(XZ_THREADS)
+        self.pending = collections.deque()
+        self.written = 0
+
+    def tell(self):
+        return self.written
+
+    def write(self, data):
+        self.written += len(data)
+        self.buf += data
+        while len(self.buf) >= XZ_BLOCK:
+            self.submit(bytes(self.buf[:XZ_BLOCK]))
+            del self.buf[:XZ_BLOCK]
+        return len(data)
+
+    def submit(self, block):
+        self.pending.append(self.pool.submit(lzma.compress, block, preset=XZ_PRESET))
+        while len(self.pending) > 2 * XZ_THREADS:
+            self.out.write(self.pending.popleft().result())
+
+    def close(self):
+        if self.buf:
+            self.submit(bytes(self.buf))
+            self.buf.clear()
+        while self.pending:
+            self.out.write(self.pending.popleft().result())
+        self.pool.shutdown()
+
+
+class _Chunks:
+    """An iterator of byte strings read as a file, without copying what is left over."""
+
+    def __init__(self, chunks):
+        self.chunks, self.cur, self.pos = chunks, b'', 0
+
+    def read(self, n):
+        out = []
+        while n > 0:
+            if self.pos == len(self.cur):
+                self.cur, self.pos = next(self.chunks, None), 0
+                if self.cur is None:
+                    self.cur = b''
+                    break
+            take = self.cur[self.pos:self.pos + n]
+            self.pos += len(take)
+            n -= len(take)
+            out.append(take)
+        return b''.join(out)
+
+
+def add(tar, name, size, chunks):
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o644
+    tar.addfile(info, _Chunks(chunks))
+
+
+def restore_order(manifest):
+    """The partitions a restore writes, in order: the boot images and the boot record last."""
+    skip = {'gpt', 'gpt_backup', 'boot1', 'boot2'} | set(r1.NEVER_WRITTEN)
+    names = [n for n, p in manifest['parts'].items() if n not in skip and p['area'] == 'user']
+    last = [n for n in RESTORE_LAST if n in names]
+    return [n for n in names if n not in last] + last
+
+
+def archive_manifest(path):
+    """The manifest at the front of a restore file, or None."""
+    try:
+        with lzma.open(path) as raw, tarfile.open(fileobj=raw, mode='r|', bufsize=1 << 20) as tar:
+            member = tar.next()
+            if member is None or member.name != 'manifest.json':
+                return None
+            m = json.loads(tar.extractfile(member).read())
+        return m if m.get('kind') == 'r1-backup' and m.get('complete') else None
+    except (OSError, EOFError, ValueError, tarfile.TarError, lzma.LZMAError):
+        return None
+
+
 def unfinished_backup(root, cid):
+    """A backup folder of this r1 still being read or packed."""
     for name in sorted(os.listdir(root)) if os.path.isdir(root) else ():
         m = read_manifest(os.path.join(root, name))
-        if m and m['device']['cid'] == cid and not m.get('complete'):
+        if m and m['device']['cid'] == cid:
             return os.path.join(root, name)
     return None
 
 
-def backups(root, cid=None):
-    """Complete backups under root: [(folder, manifest)], newest first."""
+def backups(root, cid=None, system=None):
+    """Restore files under root: [(path, manifest)], newest first; system 'rabbitOS' or 'haretic'
+    picks what was on the r1."""
     found = []
     for name in os.listdir(root) if os.path.isdir(root) else ():
-        m = read_manifest(os.path.join(root, name))
-        if m and m.get('complete') and (cid is None or m['device']['cid'] == cid):
+        if not name.endswith('.tar.xz'):
+            continue
+        m = archive_manifest(os.path.join(root, name))
+        if m and (cid is None or m['device']['cid'] == cid) \
+                and (system is None or m['device']['system'] == system):
             found.append((os.path.join(root, name), m))
     return sorted(found, key=lambda f: f[1]['created'], reverse=True)
 

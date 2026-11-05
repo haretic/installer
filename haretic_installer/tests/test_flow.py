@@ -1,18 +1,22 @@
 """The installer's steps against a simulated r1: check, backup, unlock, clean install from slot A
 and slot B, update, restore, a cable pulled mid-backup, and not-an-r1 refusals."""
-import gzip
 import hashlib
 import json
+import lzma
 import os
 import struct
 import sys
+import tarfile
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from haretic_installer import r1, package, sparse, simdata  # noqa: E402
 from haretic_installer.device import SimDevice, DeviceError  # noqa: E402
-from haretic_installer.flow import Session, Reporter, StepError, PLACE, backups  # noqa: E402
+from haretic_installer.flow import Session, Reporter, StepError, PLACE, backups, archive_manifest  # noqa: E402
+from haretic_installer import flow  # noqa: E402
+
+flow.XZ_PRESET = 0  # the simulated r1 is mostly zeros and random bytes; packing speed is not tested
 
 LK = os.urandom(r1.LK_PAYLOAD)
 PARTS = r1.parse_gpt(simdata.gpt())
@@ -111,11 +115,16 @@ class Flow(unittest.TestCase):
         self.assertEqual((s.info.slot, s.info.lock), (slot, 'locked'))
         before = {n: self.part(dev, n) for n, _, _ in r1.LAYOUT if PLACE[n][1] <= 0x6400000}
         folder = s.backup(os.path.join(self.dir, 'backups'))
-        m = json.load(open(os.path.join(folder, 'manifest.json')))
+        self.assertTrue(os.path.basename(folder).startswith('r1-rabbitOS-restore-15010044-'))
+        self.assertEqual(os.listdir(os.path.join(self.dir, 'backups')), [os.path.basename(folder)])
+        m = archive_manifest(folder)
         self.assertTrue(m['complete'])
         self.assertNotIn('userdata', m['parts'])
-        with gzip.open(os.path.join(folder, 'seccfg.img.gz')) as f:
-            self.assertEqual(f.read(), before['seccfg'])
+        self.assertEqual(m['order'][-3:], ['boot_a', 'boot_b', 'para'])
+        with lzma.open(folder) as raw, tarfile.open(fileobj=raw, mode='r|') as tar:
+            for member in tar:
+                if member.name == 'seccfg.img':
+                    self.assertEqual(tar.extractfile(member).read(), before['seccfg'])
         self.assertTrue(s.unlock())
         self.assertEqual(r1.lock_state(self.part(dev, 'seccfg', 64)), 'unlocked')
         s.install(self.pkg, 'clean')
@@ -151,8 +160,29 @@ class Flow(unittest.TestCase):
         done = len(json.load(open(os.path.join(self.dir, 'backups', os.listdir(os.path.join(self.dir, 'backups'))[0], 'manifest.json')))['parts'])
         self.assertGreater(done, 3)
         folder = s.backup(os.path.join(self.dir, 'backups'))
-        self.assertTrue(json.load(open(os.path.join(folder, 'manifest.json')))['complete'])
-        self.assertEqual(len(os.listdir(os.path.join(self.dir, 'backups'))), 1)
+        self.assertTrue(archive_manifest(folder)['complete'])
+        self.assertEqual(os.listdir(os.path.join(self.dir, 'backups')), [os.path.basename(folder)])
+
+    def test_damaged_restore_file_writes_nothing(self):
+        s, dev, path, before = self.run_clean('a')
+        raw = bytearray(open(path, 'rb').read())
+        raw[len(raw) // 2] ^= 0xff
+        open(path, 'wb').write(raw)
+        boot = self.part(dev, 'boot_a')
+        s2 = Session(dev, Log())
+        s2.inspect(s2.connect(lambda st: None))
+        with self.assertRaises(StepError):
+            s2.restore(path)
+        self.assertEqual(self.part(dev, 'boot_a'), boot)
+
+    def test_haretic_backup_is_its_own(self):
+        s, dev, stock, _ = self.run_clean('a')
+        s2 = Session(dev, Log())
+        s2.inspect(s2.connect(lambda st: None))
+        own = s2.backup(os.path.join(self.dir, 'backups'))
+        self.assertTrue(os.path.basename(own).startswith('r1-haretic-backup-'))
+        root = os.path.join(self.dir, 'backups')
+        self.assertEqual([f for f, _ in backups(root, s2.info.identity['cid'], 'rabbitOS')], [stock])
 
     def test_update_refused_on_stock(self):
         s, dev = self.session()

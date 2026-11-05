@@ -388,8 +388,8 @@ class Window(QWidget):
         self.pkg_path = None
         self.verified = False
         self.mode = 'clean'
-        self.restore_folder = None
-        self.backup_folder = None
+        self.restore_file = None
+        self.backup_file = None
         self.cid = None
         self.resume = None  # the step to go on with after a reconnect
 
@@ -617,8 +617,8 @@ class Window(QWidget):
                             '- The r1 charged to at least 30%'))
         p.body.addWidget(card)
         warn, wl = frame('warn')
-        wl.addWidget(label('Installing erases everything on the r1. The installer first makes a '
-                           'backup, so this app can put rabbitOS back later.'))
+        wl.addWidget(label('Installing erases everything on the r1. The installer first backs up '
+                           'rabbitOS into one restore file, which this app can put back later.'))
         p.body.addWidget(warn)
         src, sl = frame('card')
         sl.addWidget(label('<b>haretic to install</b>'))
@@ -736,7 +736,7 @@ class Window(QWidget):
         return p
 
     def start_install(self):
-        self.restore_folder = None
+        self.restore_file = None
         self.stepper.set_steps(STEPS)
         p = self.p_download
         self.show_page(p, 0)
@@ -876,7 +876,7 @@ class Window(QWidget):
         return p
 
     def show_check(self):
-        if self.restore_folder:
+        if self.restore_file:
             return self.show_restore_confirm()
         p = self.p_check
         info = self.session.info
@@ -914,17 +914,16 @@ class Window(QWidget):
 
     # 5. back up
     def page_backup(self):
-        p = Page('Back up the r1', 'A copy of everything on the r1 except your personal data, so the '
-                 'installer can put rabbitOS back later with "Put rabbitOS back from a backup". Keep it '
-                 'somewhere safe.')
+        p = Page('Back up the r1', '')
+        p.lead.show()
         card, lay = frame('card')
         p.existing = QRadioButton('')
         p.fresh = QRadioButton('Make a new backup')
+        p.skip = QRadioButton('Continue without a backup')
         p.group = QButtonGroup(p)
-        p.group.addButton(p.existing)
-        p.group.addButton(p.fresh)
-        lay.addWidget(p.existing)
-        lay.addWidget(p.fresh)
+        for b in (p.existing, p.skip, p.fresh):
+            p.group.addButton(b)
+            lay.addWidget(b)
         row = QHBoxLayout()
         p.folder = label('', 'small')
         row.addWidget(p.folder, 1)
@@ -934,6 +933,10 @@ class Window(QWidget):
         p.userdata = QCheckBox('Also back up personal data (userdata) - about 116 GB more, and slow')
         lay.addWidget(p.userdata)
         p.body.addWidget(card)
+        p.stock, sl = frame('warn')
+        p.stock_text = label('')
+        sl.addWidget(p.stock_text)
+        p.body.addWidget(p.stock)
         p.progress = Progress()
         p.progress.hide()
         p.body.addWidget(p.progress)
@@ -947,7 +950,7 @@ class Window(QWidget):
         p.go.clicked.connect(self.start_backup)
         p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
         p.on_error = lambda: (p.cancel.hide(), p.go.setEnabled(True))
-        p.existing.toggled.connect(lambda on: p.go.setText('Continue' if on else 'Back up'))
+        p.group.buttonToggled.connect(lambda *_: self.backup_button())
         return p
 
     def show_backup(self):
@@ -960,19 +963,45 @@ class Window(QWidget):
         self.show_page(p, 3)
 
     def backup_choices(self):
+        """rabbitOS is always backed up once, into the restore file that is the only way back; an
+        r1 already running haretic is backed up only when asked."""
         p = self.p_backup
-        found = flow.backups(p.root, self.cid)
-        p.found = found[0][0] if found else None
-        p.existing.setVisible(bool(found))
-        if found:
-            when = found[0][1]['created'].replace('T', ' ')[:16]
-            p.existing.setText(f'Use the backup of this r1 from {when}')
-            p.existing.setChecked(True)
+        haretic = self.session.info.system == 'haretic'
+        stock = flow.backups(p.root, self.cid, 'rabbitOS')
+        p.found = stock[0][0] if stock and not haretic else None
+        p.skip.setVisible(haretic)
+        p.existing.setVisible(bool(p.found))
+        p.fresh.setText('Back up haretic as it is now' if haretic else 'Make a new backup')
+        if haretic:
+            p.lead.setText('This r1 already runs haretic, so nothing needs backing up. A backup of '
+                           'haretic as it is now is optional.')
+            p.skip.setChecked(True)
+            if stock:
+                p.stock_text.setText(f'Your rabbitOS restore file is {stock[0][0]}. Keep a copy '
+                                     'somewhere safe: it is the only way to put rabbitOS back.')
+            else:
+                p.stock_text.setText(f'There is no rabbitOS restore file of this r1 in {p.root}. '
+                                     'Without it, the r1 cannot go back to rabbitOS. If you saved it '
+                                     'elsewhere, keep it safe.')
         else:
-            p.fresh.setChecked(True)
+            p.lead.setText('rabbitOS is backed up into one restore file, the only way to put it back '
+                           'later with "Put rabbitOS back from a backup". Everything is in it except '
+                           'your personal data.')
+            if p.found:
+                when = stock[0][1]['created'].replace('T', ' ')[:16]
+                p.existing.setText(f'Use the rabbitOS restore file from {when}')
+                p.existing.setChecked(True)
+            else:
+                p.fresh.setChecked(True)
+        p.stock.setVisible(haretic)
         free = flow.shutil.disk_usage(p.root).free
         p.folder.setText(f'Saved in {p.root} - {size(free)} free')
-        p.go.setText('Continue' if found else 'Back up')
+        self.backup_button()
+
+    def backup_button(self):
+        p = self.p_backup
+        p.go.setText('Back up' if p.fresh.isChecked() else 'Continue')
+        p.userdata.setEnabled(p.fresh.isChecked())
 
     def change_backup_folder(self):
         p = self.p_backup
@@ -984,9 +1013,13 @@ class Window(QWidget):
     def start_backup(self):
         p = self.p_backup
         p.error.hide()
+        if p.skip.isVisible() and p.skip.isChecked():
+            self.backup_file = None
+            self.log('no backup: the r1 runs haretic')
+            return self.confirm_writes()
         if p.existing.isVisible() and p.existing.isChecked():
-            self.backup_folder = p.found
-            self.log(f'using backup {p.found}')
+            self.backup_file = p.found
+            self.log(f'using restore file {p.found}')
             return self.confirm_writes()
         p.go.setEnabled(False)
         p.cancel.show()
@@ -995,13 +1028,31 @@ class Window(QWidget):
         self.step_safe = True
         userdata = p.userdata.isChecked()
 
-        def ok(folder):
-            self.backup_folder = folder
+        def ok(path):
             p.cancel.hide()
-            p.progress.status.setText(f'Backup saved in {folder}')
+            p.progress.status.setText(f'Saved {path}')
+            if self.session.info.system == 'haretic':
+                self.backup_file = None
+                self.confirm_writes()
+                return
+            self.backup_file = path
+            box = QMessageBox(self)
+            box.setWindowTitle('Keep the restore file safe')
+            box.setText('<b>Keep the restore file safe</b>')
+            box.setInformativeText(f'rabbitOS is backed up in {path}.<br><br>This file is the only '
+                                   'way to put rabbitOS back on this r1. Copy it somewhere safe, such '
+                                   'as a USB stick or cloud storage, not only this computer.')
+            box.addButton('I will keep it safe', QMessageBox.AcceptRole)
+            show = box.addButton('Show the file', QMessageBox.ActionRole)
+            box.exec()
+            if box.clickedButton() is show:
+                self.show_file(path)
             self.confirm_writes()
         self.resume = self.start_backup
         self.run(lambda job: self.with_reporter(job, self.session.backup, p.root, userdata), ok, p.progress)
+
+    def show_file(self, path):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
     def with_reporter(self, job, fn, *args):
         self.session.rep = job
@@ -1013,8 +1064,8 @@ class Window(QWidget):
         box = QMessageBox(self)
         box.setWindowTitle('Erase the r1 and install haretic?')
         box.setText('<b>Erase the r1 and install haretic?</b>')
-        box.setInformativeText('Everything on the r1 is erased: rabbitOS, apps, files and settings. '
-                               f'The backup in {self.backup_folder} can put rabbitOS back.')
+        box.setInformativeText('Everything on the r1 is erased: apps, files and settings. ' + (
+            f'The restore file {self.backup_file} can put rabbitOS back.' if self.backup_file else ''))
         go = box.addButton('Erase and install', QMessageBox.DestructiveRole)
         box.addButton('Not now', QMessageBox.RejectRole)
         box.setDefaultButton(go)
@@ -1089,46 +1140,49 @@ class Window(QWidget):
     # 8. start
     def page_done(self):
         p = Page('haretic is starting')
-        p.open = button('Open the backup folder')
+        p.open = button('Show the restore file')
         p.close = button('Done', 'primary')
         p.buttons.addWidget(p.open)
         p.buttons.addWidget(p.close)
-        p.open.clicked.connect(lambda: self.backup_folder and QDesktopServices.openUrl(
-            QUrl.fromLocalFile(self.backup_folder)))
+        p.open.clicked.connect(lambda: self.backup_file and self.show_file(self.backup_file))
         p.close.clicked.connect(self.close)
         return p
 
     def start_boot(self):
         p = self.p_done
-        steps = STEPS if not self.restore_folder else RESTORE_STEPS
+        steps = STEPS if not self.restore_file else RESTORE_STEPS
 
         def ok(_):
             self.device = None
             self.stepper.set(len(steps))
             p.lead.show()
-            if self.restore_folder:
-                p.title.setText('rabbitOS is back')
-                p.lead.setText('The r1 restarts into rabbitOS now. You can unplug it.')
+            if self.restore_file:
+                what = self.restore_system
+                p.title.setText(f'{what} is back')
+                p.lead.setText(f'The r1 restarts into {what} now. You can unplug it.')
+                p.open.hide()
             else:
                 p.title.setText('haretic is starting')
                 p.lead.setText(
                     'The r1 restarts now. The first start takes a few minutes: haretic sets up its '
-                    'storage while the screen shows the haret1c logo. You can unplug the r1.<br><br>'
-                    f'Your backup is in {self.backup_folder}. To put rabbitOS back, open this '
-                    'installer and choose "Put rabbitOS back from a backup".')
+                    'storage while the screen shows the haret1c logo. You can unplug the r1.' + (
+                        f'<br><br><b>Keep {self.backup_file} safe</b>, off this computer too. It is '
+                        'the only way to put rabbitOS back: open this installer and choose "Put '
+                        'rabbitOS back from a backup".' if self.backup_file else ''))
+                p.open.setVisible(bool(self.backup_file))
             self.show_page(p)
         self.resume = self.start_boot
         self.run(lambda job: self.with_reporter(job, self.session.boot), ok)
 
     # restore
     def page_restore(self):
-        p = Page('Put rabbitOS back', 'Writes a backup made by this installer back to the r1 it came '
-                 'from. Everything the installer changed returns to how it was; haretic and its data '
-                 'are erased.')
+        p = Page('Put rabbitOS back', 'Writes a restore file made by this installer back to the r1 it '
+                 'came from. Everything the installer changed returns to how it was; haretic and its '
+                 'data are erased. The whole file is checked before anything is written.')
         card, lay = frame('card')
-        p.chosen = label('No backup chosen.', 'small')
+        p.chosen = label('No restore file chosen.', 'small')
         lay.addWidget(p.chosen)
-        p.pick = button('Choose a backup folder...')
+        p.pick = button('Choose a restore file...')
         lay.addWidget(p.pick)
         p.body.addWidget(card)
         p.progress = Progress()
@@ -1147,26 +1201,28 @@ class Window(QWidget):
     def show_restore(self):
         self.stepper.set_steps(RESTORE_STEPS)
         p = self.p_restore
-        found = flow.backups(paths.backups())
-        if found and not self.restore_folder:
+        found = flow.backups(paths.backups(), system='rabbitOS') or flow.backups(paths.backups())
+        if found and not self.restore_file:
             self.set_restore(found[0][0], found[0][1])
         self.show_page(p, 0)
 
     def pick_backup(self):
-        folder = QFileDialog.getExistingDirectory(self, 'Choose the backup folder', paths.backups())
-        if not folder:
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose the restore file', paths.backups(),
+                                              'r1 restore files (*.tar.xz)')
+        if not path:
             return
-        m = flow.read_manifest(folder)
-        if not m or not m.get('complete'):
-            QMessageBox.warning(self, paths.NAME, 'That folder is not a complete r1 backup.')
+        m = flow.archive_manifest(path)
+        if not m:
+            QMessageBox.warning(self, paths.NAME, 'That is not an r1 restore file made by this installer.')
             return
-        self.set_restore(folder, m)
+        self.set_restore(path, m)
 
-    def set_restore(self, folder, m):
+    def set_restore(self, path, m):
         p = self.p_restore
-        self.restore_folder = folder
+        self.restore_file = path
         self.cid = m['device']['cid']
-        p.chosen.setText(f'{folder}<br>made {m["created"].replace("T", " ")[:16]}, r1 storage ID '
+        what = self.restore_system = 'haretic' if m['device']['system'] == 'haretic' else 'rabbitOS'
+        p.chosen.setText(f'{path}<br>{what}, made {m["created"].replace("T", " ")[:16]}, r1 storage ID '
                          f'{self.cid[:8]}...')
         p.go.setEnabled(True)
 
@@ -1193,7 +1249,7 @@ class Window(QWidget):
         p.go.setEnabled(False)
         self.step_safe = False
         self.resume = self.start_restore
-        self.run(lambda job: self.with_reporter(job, self.session.restore, self.restore_folder),
+        self.run(lambda job: self.with_reporter(job, self.session.restore, self.restore_file),
                  lambda _: self.start_boot(), p.progress)
 
     def closeEvent(self, event):

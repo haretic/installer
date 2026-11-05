@@ -2,11 +2,13 @@
 
   python -m haretic_installer.cli check
   python -m haretic_installer.cli backup  [--backups DIR] [--userdata]
-  python -m haretic_installer.cli install PACKAGE [--backups DIR] [--update] [--yes]
-  python -m haretic_installer.cli restore BACKUP_FOLDER [--yes]
+  python -m haretic_installer.cli install PACKAGE [--backups DIR] [--update] [--backup] [--yes]
+  python -m haretic_installer.cli restore RESTORE_FILE [--yes]
 
-check and backup only read the r1. install backs it up first (or uses a complete backup of the
-same r1), unlocks it, installs and starts it. Every write is read back."""
+check and backup only read the r1. A backup is one checked .tar.xz, the restore file. install
+backs up an r1 that runs rabbitOS first (or uses its restore file from before), unlocks it,
+installs and starts it; an r1 already running haretic is only backed up with --backup. Every
+write is read back."""
 import argparse
 import os
 import sys
@@ -50,6 +52,11 @@ def confirm(text, yes):
     return input(f'{text} Type "yes" to go on: ').strip().lower() == 'yes'
 
 
+def keep_safe(path):
+    print(f'\nrabbitOS restore file: {path}\nKeep a copy somewhere safe, off this computer too: it is '
+          'the only way to put rabbitOS back on this r1.', flush=True)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='haretic-installer', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -65,10 +72,11 @@ def main(argv=None):
     i.add_argument('package')
     i.add_argument('--backups', default=paths.backups())
     i.add_argument('--update', action='store_true', help='keep data (the r1 must run haretic)')
+    i.add_argument('--backup', action='store_true', help='back up an r1 that already runs haretic')
     i.add_argument('--yes', action='store_true')
     i.add_argument('--no-boot', action='store_true', help='leave the r1 in download mode')
     r = sub.add_parser('restore')
-    r.add_argument('folder')
+    r.add_argument('file')
     r.add_argument('--yes', action='store_true')
     args = ap.parse_args(argv)
 
@@ -89,16 +97,22 @@ def main(argv=None):
               f'{info.slot.upper()}, bootloader {info.lock}, loaders A {info.lk["a"]} / B {info.lk["b"]}'
               + (f', unlockable ({info.seccfg_type})' if info.seccfg_type else ''))
         if args.cmd == 'backup':
-            print('Backup saved in', s.backup(args.backups, args.userdata))
+            keep_safe(s.backup(args.backups, args.userdata))
         elif args.cmd == 'restore':
             if not confirm('This writes the backup back over everything haretic changed.', args.yes):
                 return 1
-            s.restore(args.folder)
+            s.restore(args.file)
         elif args.cmd == 'install':
             mode = 'update' if args.update else 'clean'
-            found = flow.backups(args.backups, info.identity['cid'])
-            folder = found[0][0] if found else s.backup(args.backups)
-            print('Backup:', folder)
+            stock = flow.backups(args.backups, info.identity['cid'], 'rabbitOS')
+            if info.system != 'haretic':
+                keep_safe(stock[0][0] if stock else s.backup(args.backups))
+            elif args.backup:
+                print('Backup of haretic saved in', s.backup(args.backups))
+            if info.system == 'haretic':
+                print(f'rabbitOS restore file: {stock[0][0]}' if stock else
+                      f'No rabbitOS restore file of this r1 in {args.backups}. Without it, this r1 '
+                      'cannot go back to rabbitOS.')
             if mode == 'clean' and not confirm('Everything on the r1 is erased.', args.yes):
                 return 1
             s.unlock()
