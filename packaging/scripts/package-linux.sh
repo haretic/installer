@@ -11,6 +11,8 @@ case "$ARCH" in
 	*) exit 1;;
 esac
 bundle=build/dist/haretic-installer
+# The bundle needs at least the glibc it was built against
+glibc=$(ldd --version | sed -n '1s/.* //p')
 mkdir -p dist
 
 pkg=build/deb
@@ -32,7 +34,7 @@ Package: haretic-installer
 Version: $deb_version
 Architecture: $debarch
 Maintainer: haretic <0@kenny.cat>
-Depends: libc6 (>= 2.35), libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libgl1, libegl1, libdbus-1-3, libxcb-cursor0, libxcb-icccm4, libxcb-keysyms1, libxcb-shape0, libxcb-xinerama0, libxcb-randr0, libxcb-render-util0, libxcb-image0, libwayland-client0, libwayland-cursor0
+Depends: libc6 (>= $glibc), libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libgl1, libegl1, libdbus-1-3, libxcb-cursor0, libxcb-icccm4, libxcb-keysyms1, libxcb-shape0, libxcb-xinerama0, libxcb-randr0, libxcb-render-util0, libxcb-image0, libwayland-client0, libwayland-cursor0
 Section: utils
 Priority: optional
 Homepage: https://github.com/haretic/mtkclient
