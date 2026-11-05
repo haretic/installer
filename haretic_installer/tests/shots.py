@@ -94,6 +94,13 @@ w.p_install.error.hide()
 w.failed(flow.r1.NotAnR1('Its "lk_a" partition is not where an r1 has it.'), w.p_check)
 w.show_page(w.p_check, 2)
 shot('not-an-r1')
+# the same r1 again, now running haretic: the update choice, and no backup unless asked
+w.session.info.lk['a'], w.session.info.slot = 'haretic', 'a'
+w.show_page(w.p_check, 2)
+w.show_check()
+shot('check-haretic')
+w.p_check.go.click()
+shot('backup-haretic')
 w.show_restore()
 shot('restore')
 w.show_setup('usbdk')

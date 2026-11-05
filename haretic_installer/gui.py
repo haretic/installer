@@ -891,8 +891,7 @@ class Window(QWidget):
             + '</table>')
         haretic = info.system == 'haretic' and info.slot == 'a'
         p.choice.setVisible(haretic)
-        if not haretic:
-            p.clean.setChecked(True)
+        (p.update if haretic else p.clean).setChecked(True)
         self.check_text()
         self.show_page(p, 2)
 
@@ -900,8 +899,12 @@ class Window(QWidget):
         p = self.p_check
         self.mode = 'update' if p.choice.isVisible() and p.update.isChecked() else 'clean'
         if self.mode == 'update':
-            p.next.setText('Nothing has been changed so far. Next, the installer backs up the r1, then '
-                           'writes the new haretic over the old one. Your apps, files and settings stay.')
+            p.next.setText('Nothing has been changed so far. Next, the installer writes the new haretic '
+                           'over the old one. Your apps, files and settings stay. A backup first is '
+                           'optional.')
+        elif p.choice.isVisible():
+            p.next.setText('Nothing has been changed so far. Next, the installer erases the r1 and installs '
+                           'haretic fresh. A backup first is optional.')
         else:
             slot_b = self.session.info.slot == 'b'
             p.next.setText('Nothing has been changed so far. Next, the installer backs up the r1, then '
