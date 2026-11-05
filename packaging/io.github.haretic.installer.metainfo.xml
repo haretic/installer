@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.haretic.installer</id>
+  <name>haretic installer</name>
+  <summary>Install haretic on a rabbit r1</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>A guided installer for haretic, Android (LineageOS) for the rabbit r1. It checks the
+    connected device is an r1, backs it up, unlocks its bootloader with mtkclient, installs
+    haretic and starts it. It can also put rabbitOS back from its backup.</p>
+  </description>
+  <launchable type="desktop-id">io.github.haretic.installer.desktop</launchable>
+  <url type="homepage">https://github.com/haretic/mtkclient</url>
+  <content_rating type="oars-1.1"/>
+</component>

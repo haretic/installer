@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=haretic installer
+Comment=Install haretic on a rabbit r1
+Exec=haretic-installer
+Icon=io.github.haretic.installer
+Terminal=false
+Categories=Utility;System;
+Keywords=rabbit;r1;haretic;android;lineageos;flash;mtk;
+StartupWMClass=haretic installer

@@ -1,0 +1,1218 @@
+"""The guided installer window: seven steps from download to the r1's first start, each explained,
+with progress, time left, and errors that say what happened, whether the r1 is safe, and how to
+go on."""
+import datetime
+import os
+import sys
+import time
+import traceback
+
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
+                               QLabel, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+                               QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
+
+from . import drivers, flow, package, paths, r1
+from .device import Cancelled, DeviceError, MtkDevice, SimDevice
+
+ORANGE = '#EC6A37'
+STEPS = ('Download', 'Connect', 'Check', 'Back up', 'Unlock', 'Install', 'Start')
+RESTORE_STEPS = ('Backup', 'Connect', 'Check', 'Restore', 'Start')
+
+STYLE = f'''
+QWidget {{ background: #141414; color: #e8e8e8; font-size: 14px; }}
+QLabel#title {{ font-size: 24px; font-weight: 600; color: #ffffff; }}
+QLabel#lead {{ color: #c8c8c8; }}
+QLabel#small, QLabel#hint {{ color: #9a9a9a; font-size: 13px; }}
+QLabel#status {{ font-size: 15px; color: #ffffff; }}
+QFrame#card {{ background: #1e1e1e; border: 1px solid #2c2c2c; border-radius: 10px; }}
+QFrame#card QLabel, QFrame#card QRadioButton, QFrame#card QCheckBox {{ background: transparent; }}
+QFrame#warn {{ background: #2a1d16; border: 1px solid #6b3a22; border-radius: 10px; }}
+QFrame#warn QLabel {{ background: transparent; color: #f3d2c2; }}
+QFrame#error {{ background: #2a1515; border: 1px solid #7a2c2c; border-radius: 10px; }}
+QFrame#error QLabel {{ background: transparent; }}
+QFrame#side {{ background: #101010; border-right: 1px solid #242424; }}
+QFrame#side QLabel {{ background: transparent; }}
+QPushButton {{ background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 9px 18px; }}
+QPushButton:hover {{ background: #303030; }}
+QPushButton:disabled {{ color: #666; border-color: #2a2a2a; }}
+QPushButton#primary {{ background: {ORANGE}; color: #141414; border: none; font-weight: 600; }}
+QPushButton#primary:hover {{ background: #f27c4d; }}
+QPushButton#primary:disabled {{ background: #5a3a2c; color: #2a2a2a; }}
+QPushButton#danger {{ background: #b3402a; color: #ffffff; border: none; font-weight: 600; }}
+QPushButton#link {{ background: transparent; border: none; color: {ORANGE}; padding: 4px 0; text-align: left; }}
+QPushButton#link:hover {{ text-decoration: underline; }}
+QProgressBar {{ background: #262626; border: none; border-radius: 6px; height: 12px; text-align: center; color: transparent; }}
+QProgressBar::chunk {{ background: {ORANGE}; border-radius: 6px; }}
+QPlainTextEdit {{ background: #0c0c0c; border: 1px solid #262626; border-radius: 8px; font-family: monospace; font-size: 12px; color: #b8b8b8; }}
+QRadioButton, QCheckBox {{ spacing: 10px; padding: 4px 0; }}
+QRadioButton::indicator, QCheckBox::indicator {{ width: 14px; height: 14px; border: 2px solid #6a6a6a; background: #141414; }}
+QRadioButton::indicator {{ border-radius: 9px; }}
+QCheckBox::indicator {{ border-radius: 4px; }}
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {{ border-color: {ORANGE}; }}
+QRadioButton::indicator:checked {{ border-color: {ORANGE}; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {ORANGE}, stop:0.45 {ORANGE}, stop:0.55 #141414, stop:1 #141414); }}
+QCheckBox::indicator:checked {{ border-color: {ORANGE}; background: {ORANGE}; }}
+QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{ border-color: #333; }}
+QRadioButton:disabled, QCheckBox:disabled {{ color: #666; }}
+'''
+
+
+def size(n):
+    return flow.fmt_size(n)
+
+
+def minutes(seconds):
+    if seconds is None:
+        return ''
+    if seconds < 60:
+        return 'less than a minute left'
+    return f'about {round(seconds / 60)} min left'
+
+
+# -- background work
+
+class Job(QThread, flow.Reporter):
+    """Runs one step off the window's thread; reports through signals."""
+    status_changed = Signal(str)
+    progressed = Signal(object, object)
+    logged = Signal(str)
+    finished_ok = Signal(object)
+    failed = Signal(object)
+
+    def __init__(self, fn, parent=None):
+        QThread.__init__(self, parent)
+        self.fn = fn
+        self.stop = False
+
+    def status(self, text):
+        self.status_changed.emit(text)
+
+    def progress(self, done, total):
+        self.progressed.emit(done, total)
+
+    def log(self, line):
+        self.logged.emit(line)
+
+    def cancelled(self):
+        return self.stop
+
+    def run(self):
+        try:
+            self.finished_ok.emit(self.fn(self))
+        except BaseException as e:  # noqa: B902 - every failure is shown, none crashes the window
+            self.logged.emit(''.join(traceback.format_exception(e)))
+            self.failed.emit(e)
+
+
+# -- drawing
+
+class R1Picture(QWidget):
+    """The r1 cabled to a computer, the cable pulsing while the installer waits for it."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(260, 150)
+        self.phase = 0.0
+        self.state = 'off'
+        self.timer = QTimer(self, interval=50, timeout=self.tick)
+
+    def set_state(self, state):
+        self.state = state
+        if state == 'waiting':
+            self.timer.start()
+        else:
+            self.timer.stop()
+        self.update()
+
+    def tick(self):
+        self.phase = (self.phase + 0.02) % 1.0
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        s = min(w / 260, h / 150)
+        p.translate((w - 260 * s) / 2, (h - 150 * s) / 2)
+        p.scale(s, s)
+        # the r1: orange body, black screen on the left, the wheel on the right
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(ORANGE))
+        p.drawRoundedRect(QRectF(10, 20, 110, 110), 18, 18)
+        p.setBrush(QColor('#0a0a0a'))
+        p.drawRoundedRect(QRectF(20, 32, 72, 86), 6, 6)
+        if self.state == 'connected':
+            p.setBrush(QColor(ORANGE))
+            p.drawEllipse(QPointF(56, 75), 6, 6)
+        p.setBrush(QColor('#3a2418'))
+        p.drawRoundedRect(QRectF(100, 66, 12, 34), 6, 6)
+        # the computer
+        p.setBrush(QColor('#2c2c2c'))
+        p.drawRoundedRect(QRectF(170, 38, 80, 56), 5, 5)
+        p.setBrush(QColor('#0f0f0f'))
+        p.drawRect(QRectF(176, 44, 68, 44))
+        p.setBrush(QColor('#2c2c2c'))
+        p.drawRoundedRect(QRectF(160, 96, 100, 8), 3, 3)
+        # the cable, from the r1's bottom edge to the computer
+        path = QPainterPath(QPointF(65, 130))
+        path.cubicTo(QPointF(65, 148), QPointF(150, 146), QPointF(200, 104))
+        pen = QPen(QColor('#555' if self.state == 'off' else ORANGE), 3)
+        pen.setCapStyle(Qt.RoundCap)
+        if self.state == 'waiting':
+            pen.setDashPattern([3, 4])
+            pen.setDashOffset(-self.phase * 70)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+
+class Stepper(QWidget):
+    """The steps down the left side: done, current, to come, failed."""
+
+    def __init__(self, steps):
+        super().__init__()
+        self.steps = list(steps)
+        self.current = 0
+        self.failed = False
+        self.setMinimumWidth(170)
+
+    def set_steps(self, steps):
+        self.steps = list(steps)
+        self.current = 0
+        self.update()
+
+    def set(self, index, failed=False):
+        self.current, self.failed = index, failed
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        f = QFont(self.font())
+        f.setPixelSize(14)
+        p.setFont(f)
+        y0, gap = 28, 46
+        for i, name in enumerate(self.steps):
+            y = y0 + i * gap
+            if i < len(self.steps) - 1:
+                p.setPen(QPen(QColor(ORANGE if i < self.current else '#333'), 2))
+                p.drawLine(QPointF(30, y + 12), QPointF(30, y + gap - 12))
+            c = QPointF(30, y)
+            if i < self.current:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(ORANGE))
+                p.drawEllipse(c, 10, 10)
+                p.setPen(QPen(QColor('#141414'), 2.2))
+                p.drawPolyline([QPointF(25, y), QPointF(29, y + 4), QPointF(35.5, y - 4)])
+            elif i == self.current:
+                colour = '#d9534f' if self.failed else ORANGE
+                p.setPen(QPen(QColor(colour), 2))
+                p.setBrush(QColor('#141414'))
+                p.drawEllipse(c, 10, 10)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(colour))
+                p.drawEllipse(c, 4.5, 4.5)
+            else:
+                p.setPen(QPen(QColor('#3a3a3a'), 2))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(c, 10, 10)
+            p.setPen(QColor('#ffffff' if i == self.current else '#bdbdbd' if i < self.current else '#6c6c6c'))
+            f.setBold(i == self.current)
+            p.setFont(f)
+            p.drawText(QRectF(52, y - 12, 200, 24), Qt.AlignVCenter, name)
+
+
+# -- building blocks
+
+def label(text, name=None, wrap=True):
+    w = QLabel(text)
+    w.setWordWrap(wrap)
+    w.setTextFormat(Qt.RichText)
+    w.setOpenExternalLinks(True)
+    if name:
+        w.setObjectName(name)
+    return w
+
+
+def frame(name):
+    f = QFrame()
+    f.setObjectName(name)
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(16, 14, 16, 14)
+    lay.setSpacing(6)
+    return f, lay
+
+
+def button(text, name=None):
+    b = QPushButton(text)
+    if name:
+        b.setObjectName(name)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+class Page(QWidget):
+    def __init__(self, title, lead=''):
+        super().__init__()
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(36, 30, 36, 24)
+        self.lay.setSpacing(14)
+        self.title = label(title, 'title')
+        self.lay.addWidget(self.title)
+        self.lead = label(lead, 'lead')
+        self.lead.setVisible(bool(lead))
+        self.lay.addWidget(self.lead)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(12)
+        self.lay.addLayout(self.body)
+        self.lay.addStretch(1)
+        self.buttons = QHBoxLayout()
+        self.buttons.addStretch(1)
+        self.lay.addLayout(self.buttons)
+
+
+class Progress(QWidget):
+    """A status line, a bar, and done/total, speed and time left under it."""
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.status = label('', 'status')
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.detail = label('', 'small')
+        lay.addWidget(self.status)
+        lay.addWidget(self.bar)
+        lay.addWidget(self.detail)
+        self.rate = flow.Rate()
+        self.unit_bytes = True
+
+    def reset(self, text=''):
+        self.status.setText(text)
+        self.bar.setValue(0)
+        self.detail.setText('')
+        self.rate = flow.Rate()
+
+    def set(self, done, total):
+        self.bar.setValue(int(1000 * done / total) if total else 0)
+        self.rate.add(done)
+        if not self.unit_bytes or total <= 1:
+            self.detail.setText('')
+            return
+        bits = [f'{size(done)} of {size(total)}']
+        left = self.rate.left(done, total)
+        if len(self.rate.marks) > 1:
+            (t0, d0), (t1, d1) = self.rate.marks[0], self.rate.marks[-1]
+            if t1 > t0:
+                bits.append(f'{size((d1 - d0) / (t1 - t0))}/s')
+        if left is not None:
+            bits.append(minutes(left))
+        self.detail.setText(' - '.join(bits))
+
+
+class ErrorCard(QFrame):
+    """What went wrong, whether the r1 is safe, and the ways on."""
+
+    def __init__(self, window):
+        super().__init__()
+        self.setObjectName('error')
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        self.head = label('', 'status')
+        self.text = label('')
+        self.safety = label('', 'small')
+        self.hint = label('', 'small')
+        for w in (self.head, self.text, self.hint, self.safety):
+            lay.addWidget(w)
+        row = QHBoxLayout()
+        self.retry = button('Try again', 'primary')
+        self.save = button('Save log...')
+        self.details = button('Show details')
+        row.addWidget(self.retry)
+        row.addWidget(self.save)
+        row.addWidget(self.details)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.save.clicked.connect(window.save_log)
+        self.details.clicked.connect(window.toggle_log)
+        self.hide()
+
+    def show_error(self, head, text, safe, hint=None):
+        self.head.setText(head)
+        self.text.setText(text)
+        self.hint.setText(hint or '')
+        self.hint.setVisible(bool(hint))
+        self.safety.setText(
+            'Nothing on the r1 was changed by this step. It is safe to unplug it.' if safe is True else
+            'The step did not finish, so the r1 will not start right now. That is recoverable: the '
+            'r1 can always be reconnected, and Try again finishes the job.' if safe is False else safe)
+        self.show()
+
+
+# -- the window
+
+class Window(QWidget):
+    def __init__(self, demo=False):
+        super().__init__()
+        self.demo = demo
+        self.setWindowTitle(paths.NAME)
+        self.resize(980, 680)
+        self.setMinimumSize(900, 620)
+        self.setStyleSheet(STYLE)
+        stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        self.log_path = os.path.join(paths.logs(), f'installer-{stamp}.log')
+        self.log_file = open(self.log_path, 'a', encoding='utf-8', buffering=1)
+        self.job = None
+        self.session = None
+        self.device = None
+        self.release = None
+        self.pkg = None
+        self.pkg_path = None
+        self.verified = False
+        self.mode = 'clean'
+        self.restore_folder = None
+        self.backup_folder = None
+        self.cid = None
+        self.resume = None  # the step to go on with after a reconnect
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        side = QFrame()
+        side.setObjectName('side')
+        side.setFixedWidth(210)
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(14, 22, 8, 16)
+        brand = label('<span style="font-size:20px;font-weight:600;color:#fff">haretic</span>'
+                      f'<span style="font-size:20px;color:{ORANGE}"> installer</span>', wrap=False)
+        sl.addWidget(brand)
+        sl.addWidget(label(f'for the rabbit r1 - {paths.VERSION}', 'small'))
+        sl.addSpacing(18)
+        self.stepper = Stepper(STEPS)
+        sl.addWidget(self.stepper, 1)
+        self.log_toggle = button('Show details', 'link')
+        self.log_toggle.clicked.connect(self.toggle_log)
+        sl.addWidget(self.log_toggle)
+        root.addWidget(side)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
+        self.pages = QStackedWidget()
+        right.addWidget(self.pages, 1)
+        self.log_view = QPlainTextEdit(readOnly=True)
+        self.log_view.setMaximumBlockCount(5000)
+        self.log_view.setFixedHeight(170)
+        self.log_view.hide()
+        lw = QWidget()
+        ll = QVBoxLayout(lw)
+        ll.setContentsMargins(24, 0, 24, 16)
+        ll.addWidget(self.log_view)
+        right.addWidget(lw)
+        root.addLayout(right, 1)
+
+        self.build_pages()
+        self.log(f'{paths.NAME} {paths.VERSION} on {sys.platform}; data in {paths.data_dir()}')
+        need = None if demo else drivers.needed()
+        if need:
+            self.show_setup(need)
+        else:
+            self.show_welcome()
+
+    # -- log
+    def log(self, line):
+        line = str(line).rstrip()
+        if not line:
+            return
+        self.log_file.write(f'{time.strftime("%H:%M:%S")} {line}\n')
+        self.log_view.appendPlainText(line)
+
+    def toggle_log(self):
+        self.log_view.setVisible(not self.log_view.isVisible())
+        self.log_toggle.setText('Hide details' if self.log_view.isVisible() else 'Show details')
+
+    def save_log(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Save the log', os.path.join(
+            os.path.expanduser('~'), os.path.basename(self.log_path)), 'Log (*.log *.txt)')
+        if path:
+            with open(self.log_path, encoding='utf-8') as src, open(path, 'w', encoding='utf-8') as out:
+                out.write(src.read())
+
+    # -- running steps
+    def run(self, fn, ok, progress=None, status=None, error=None):
+        self.job = Job(fn, self)
+        self.job.logged.connect(self.log)
+        if progress:
+            self.job.progressed.connect(progress.set)
+            self.job.status_changed.connect(progress.status.setText)
+        if status:
+            self.job.status_changed.connect(status)
+        self.job.finished_ok.connect(ok)
+        self.job.failed.connect(error or self.failed)
+        self.job.start()
+
+    def show_page(self, page, step=None):
+        self.pages.setCurrentWidget(page)
+        if step is not None:
+            self.stepper.set(step)
+
+    def failed(self, e, page=None, head='This step stopped'):
+        """Show an exception on the current page's error card."""
+        page = page or self.pages.currentWidget()
+        card = page.error
+        safe, hint = True, None
+        retry = self.retry_step
+        if isinstance(e, Cancelled):
+            text = 'You stopped it.'
+        elif isinstance(e, r1.NotAnR1):
+            head = 'This does not look like a rabbit r1'
+            text = str(e)
+            hint = 'The installer only installs on an r1. Unplug the device.'
+            retry = self.start_connect
+        elif isinstance(e, flow.StepError):
+            text, safe, hint = str(e), e.safe, e.hint
+        elif isinstance(e, DeviceError):
+            text = str(e)
+            safe = getattr(self, 'step_safe', True)
+            hint = ('To go on, reconnect the r1: unplug it, hold its side button for about 10 seconds '
+                    'until the screen stays dark, then plug it in again and press Try again.')
+            retry = self.reconnect
+        elif isinstance(e, (package.PackageError, OSError)):
+            text = str(e)
+        else:
+            text = f'Something unexpected happened: {type(e).__name__}: {e}'
+            hint = 'The details have the full error; please save the log and report it.'
+        self.stepper.set(self.stepper.current, failed=True)
+        try:
+            card.retry.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        card.retry.clicked.connect(lambda: (card.hide(), self.stepper.set(self.stepper.current), retry()))
+        card.show_error(head, text, safe, hint)
+        self.log(f'error: {head}: {text}')
+        if hasattr(page, 'on_error'):
+            page.on_error()
+
+    def retry_step(self):
+        if self.resume:
+            self.resume()
+
+    def reconnect(self):
+        """After a USB failure: a fresh connection to the same r1, then the step that failed."""
+        if self.device:
+            self.device.close()
+        self.device = None
+        self.start_connect(after=self.resume)
+
+    # -- pages
+    def build_pages(self):
+        self.p_setup = self.page_setup()
+        self.p_welcome = self.page_welcome()
+        self.p_download = self.page_download()
+        self.p_connect = self.page_connect()
+        self.p_check = self.page_check()
+        self.p_backup = self.page_backup()
+        self.p_unlock = self.page_unlock()
+        self.p_install = self.page_install()
+        self.p_done = self.page_done()
+        self.p_restore = self.page_restore()
+        for p in (self.p_setup, self.p_welcome, self.p_download, self.p_connect, self.p_check, self.p_backup,
+                  self.p_unlock, self.p_install, self.p_done, self.p_restore):
+            if not hasattr(p, 'error'):
+                p.error = ErrorCard(self)
+                p.body.addWidget(p.error)
+            self.pages.addWidget(p)
+
+    # 0. one-time USB setup
+    def page_setup(self):
+        p = Page('One-time setup: USB access')
+        p.progress = Progress()
+        p.progress.unit_bytes = True
+        p.progress.hide()
+        p.body.addWidget(p.progress)
+        p.go = button('Set up USB access', 'primary')
+        p.skip = button('Skip')
+        p.buttons.addWidget(p.skip)
+        p.buttons.addWidget(p.go)
+        p.skip.clicked.connect(self.show_welcome)
+        p.go.clicked.connect(self.setup_usb)
+        return p
+
+    def show_setup(self, need):
+        p = self.p_setup
+        self.need = need
+        ids = ', '.join(f'{r1.VENDOR:04X}:{pid:04X} ({name})' for pid, name in r1.USB_IDS.items())
+        if need == 'usbdk':
+            p.lead.setText(
+                'To talk to the r1, this computer needs <b>UsbDk</b>, a free, signed USB driver from '
+                'the daynix project (Red Hat). It covers the r1 in each of its USB modes: ' + ids +
+                '. The installer downloads UsbDk 1.0.22 from its official release, checks it, and '
+                'Windows asks you for permission to install it. This is needed once.')
+            p.go.setText('Install the USB driver')
+        else:
+            p.lead.setText(
+                'To talk to the r1 without administrator rights, Linux needs a small rule that lets '
+                'you use its USB modes (' + ids + ') and keeps ModemManager from grabbing it. The '
+                'installer adds it to /etc/udev/rules.d; it asks for your password. This is needed once.')
+            p.go.setText('Allow USB access')
+        self.stepper.set_steps(STEPS)
+        self.show_page(p, 0)
+
+    def setup_usb(self):
+        p = self.p_setup
+        p.go.setEnabled(False)
+        p.progress.show()
+        p.progress.reset('Downloading UsbDk' if self.need == 'usbdk' else 'Waiting for your password')
+
+        def work(job):
+            if self.need == 'usbdk':
+                msi = drivers.download_usbdk(paths.downloads(), job.progress)
+                job.status('Installing UsbDk - confirm the Windows prompt')
+                return drivers.install_usbdk(msi)
+            drivers.install_udev()
+            return False
+
+        def ok(restart):
+            p.go.setEnabled(True)
+            if restart:
+                QMessageBox.information(self, paths.NAME, 'The USB driver is installed. Windows asks '
+                                        'for a restart; restart, then open the installer again.')
+            self.log('USB access set up')
+            self.show_welcome()
+
+        def bad(e):
+            p.go.setEnabled(True)
+            self.failed(e, p, 'USB access was not set up')
+        self.resume = self.setup_usb
+        self.run(work, ok, p.progress, error=bad)
+
+    # 1. welcome
+    def page_welcome(self):
+        p = Page('Install haretic on your rabbit r1',
+                 'haretic replaces rabbitOS with Android (LineageOS 24) on the r1. This guide goes '
+                 'through seven steps and explains each one before it happens. It takes about '
+                 '30 minutes.')
+        card, lay = frame('card')
+        lay.addWidget(label('<b>Before you start</b>'))
+        lay.addWidget(label('- A USB-C cable that carries data (some cables only charge)<br>'
+                            '- About 15 GB free on this computer, for a backup of the r1<br>'
+                            '- The r1 charged to at least 30%'))
+        p.body.addWidget(card)
+        warn, wl = frame('warn')
+        wl.addWidget(label('Installing erases everything on the r1. The installer first makes a '
+                           'backup, so this app can put rabbitOS back later.'))
+        p.body.addWidget(warn)
+        src, sl = frame('card')
+        sl.addWidget(label('<b>haretic to install</b>'))
+        p.group = QButtonGroup(p)
+        p.online = QRadioButton('Looking for the latest haretic release...')
+        p.online.setEnabled(False)
+        p.local = QRadioButton('An install package on this computer')
+        p.group.addButton(p.online)
+        p.group.addButton(p.local)
+        sl.addWidget(p.online)
+        opts = QHBoxLayout()
+        opts.setContentsMargins(28, 0, 0, 4)
+        p.gapps = QCheckBox('Google apps (Play Store and Google services)')
+        p.root = QCheckBox('Root (Magisk)')
+        for c in (p.gapps, p.root):
+            c.setEnabled(False)
+            opts.addWidget(c)
+            c.toggled.connect(lambda _: self.variant_text())
+        opts.addStretch(1)
+        sl.addLayout(opts)
+        p.variant = label('', 'small')
+        p.variant.setContentsMargins(28, 0, 0, 0)
+        sl.addWidget(p.variant)
+        row = QHBoxLayout()
+        row.addWidget(p.local)
+        p.choose = button('Choose...')
+        row.addWidget(p.choose)
+        row.addStretch(1)
+        sl.addLayout(row)
+        p.picked = label('', 'small')
+        sl.addWidget(p.picked)
+        p.body.addWidget(src)
+        p.restore = button('Put rabbitOS back from a backup instead', 'link')
+        p.buttons.insertWidget(0, p.restore)
+        p.start = button('Start', 'primary')
+        p.start.setEnabled(False)
+        p.buttons.addWidget(p.start)
+        p.choose.clicked.connect(self.choose_package)
+        p.group.buttonClicked.connect(lambda _: self.welcome_ready())
+        p.start.clicked.connect(self.start_install)
+        p.restore.clicked.connect(self.show_restore)
+        return p
+
+    def show_welcome(self):
+        self.stepper.set_steps(STEPS)
+        self.show_page(self.p_welcome, 0)
+        p = self.p_welcome
+        if self.release is None and not getattr(self, 'asked_release', False):
+            self.asked_release = True
+
+            def ok(found):
+                self.releases = found
+                if found:
+                    rel = found[0]
+                    pre = ' (pre-release)' if rel['prerelease'] else ''
+                    p.online.setText(f'Download {rel["version"]}{pre}')
+                    p.online.setEnabled(True)
+                    p.gapps.setEnabled(any(r['gapps'] for r in found))
+                    p.root.setEnabled(any(r['root'] for r in found))
+                    if not p.local.isChecked():
+                        p.online.setChecked(True)
+                else:
+                    p.online.setText('No haretic release is published yet - use a package file')
+                self.variant_text()
+
+            def bad(e):
+                self.release = False
+                p.online.setText('Could not reach GitHub to find haretic releases - use a package file')
+                self.log(f'release lookup: {e}')
+            self.run(lambda job: package.latest(), ok, error=bad)
+
+    def choose_package(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose a haretic install package', paths.downloads(),
+                                              'haretic install package (*.tar.xz)')
+        if not path:
+            return
+        try:
+            pkg = package.Package(path)
+        except package.PackageError as e:
+            QMessageBox.warning(self, paths.NAME, str(e))
+            return
+        self.pkg, self.pkg_path, self.verified = pkg, path, False
+        p = self.p_welcome
+        p.local.setChecked(True)
+        p.picked.setText(f'{pkg.version}, {package.describe(pkg.gapps, pkg.root)} - {os.path.basename(path)}')
+        self.welcome_ready()
+
+    def variant_text(self):
+        """The release package matching the boxes ticked, and what it is."""
+        p = self.p_welcome
+        found = getattr(self, 'releases', None) or []
+        pick = [r for r in found if r['gapps'] == p.gapps.isChecked() and r['root'] == p.root.isChecked()]
+        self.release = pick[0] if pick else (False if found else self.release)
+        if self.release:
+            r = self.release
+            p.variant.setText(f'{r["name"]} - {size(r["size"])}')
+        elif found:
+            p.variant.setText('This combination is not in the release.')
+        self.welcome_ready()
+
+    def welcome_ready(self):
+        p = self.p_welcome
+        p.start.setEnabled((p.online.isChecked() and bool(self.release)) or (p.local.isChecked() and self.pkg is not None))
+
+    # 2. download and check the package
+    def page_download(self):
+        p = Page('Get haretic', 'Downloading the haretic install package, then unpacking it and checking '
+                 'every image in it, so nothing damaged reaches the r1. A stopped download continues '
+                 'where it was.')
+        p.progress = Progress()
+        p.body.addWidget(p.progress)
+        p.cancel = button('Stop')
+        p.buttons.addWidget(p.cancel)
+        p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
+        return p
+
+    def start_install(self):
+        self.restore_folder = None
+        self.stepper.set_steps(STEPS)
+        p = self.p_download
+        self.show_page(p, 0)
+        p.progress.reset('Preparing')
+        p.error.hide()
+        online = self.p_welcome.online.isChecked()
+
+        def work(job):
+            if online:
+                job.status(f'Downloading {self.release["name"]}')
+                path = package.download(self.release, paths.downloads(), job.progress, job.cancelled)
+                if path is None:
+                    raise Cancelled()
+                self.pkg, self.pkg_path, self.verified = package.Package(path), path, False
+            if not self.verified:
+                job.status('Unpacking and checking the package')
+                if not self.pkg.verify(job.progress, job.cancelled):
+                    raise Cancelled()
+                self.verified = True
+            return self.pkg
+
+        def ok(pkg):
+            self.log(f'package ok: {pkg.version} ({self.pkg_path})')
+            self.start_connect(after=self.show_check)
+        self.resume = self.start_install
+        self.run(work, ok, p.progress)
+
+    # 3. connect
+    def page_connect(self):
+        p = Page('Connect the r1', 'The installer talks to the r1 while it is switched off, through its '
+                 'MediaTek download mode, which starts for a moment when an r1 that is off is plugged in.')
+        row = QHBoxLayout()
+        steps = label('<table cellspacing="0" cellpadding="5">'
+                      f'<tr><td style="color:{ORANGE};font-weight:600">1</td><td>Unplug the r1 if it is plugged in.</td></tr>'
+                      f'<tr><td style="color:{ORANGE};font-weight:600">2</td><td>Turn it off: hold the side button for about '
+                      '10 seconds, until the screen stays dark.</td></tr>'
+                      f'<tr><td style="color:{ORANGE};font-weight:600">3</td><td>Plug it into this computer. Keep it '
+                      'plugged in until the installer says you can unplug it.</td></tr></table>')
+        row.addWidget(steps, 3)
+        p.picture = R1Picture()
+        row.addWidget(p.picture, 2)
+        p.body.addLayout(row)
+        p.state = label('', 'status')
+        p.body.addWidget(p.state)
+        p.help, hl = frame('card')
+        hl.addWidget(label('<b>Not showing up?</b>'))
+        hl.addWidget(label('- Try another cable: many only charge.<br>'
+                           '- Use a port on the computer itself, not a hub or a monitor.<br>'
+                           '- Make sure the r1 is really off: unplug, hold the side button 10 seconds, plug in again.'
+                           + ('<br>- If Windows plays no sound when you plug it in, try another port.'
+                              if sys.platform == 'win32' else '')))
+        p.help.hide()
+        p.body.addWidget(p.help)
+        p.cancel = button('Stop waiting')
+        p.buttons.addWidget(p.cancel)
+        p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
+        p.timer = QTimer(p, singleShot=True, interval=45000, timeout=p.help.show)
+        return p
+
+    def start_connect(self, after=None):
+        p = self.p_connect
+        self.show_page(p, 1)
+        p.error.hide()
+        p.help.hide()
+        p.picture.set_state('waiting')
+        p.state.setText('Waiting for the r1...')
+        p.timer.start()
+        p.cancel.setEnabled(True)
+        after = after or self.show_check
+
+        texts = {'waiting': 'Waiting for the r1...',
+                 'found': 'Found the r1 - connecting...',
+                 'agent': 'Starting the download agent on the r1...'}
+
+        def work(job):
+            if self.device is None:
+                if self.demo:
+                    self.device = SimDevice(os.path.join(paths.data_dir(), 'demo-r1'), rate=self.demo,
+                                            log=job.log, slot=os.environ.get('HARETIC_DEMO_SLOT', 'b'))
+                else:
+                    self.device = MtkDevice(paths.work(), log=job.log)
+            session = flow.Session(self.device, job)
+            identity = session.connect(lambda s: job.status(texts.get(s, s)))
+            if self.cid and identity['cid'] != self.cid:
+                raise flow.StepError('This is a different r1 from the one the installer started with.',
+                                     hint='Connect the first r1 to finish its install.')
+            job.status('Reading the r1...')
+            session.inspect(identity)
+            return session
+
+        def status(text):
+            p.state.setText(text)
+            if text != texts['waiting']:
+                p.timer.stop()
+                p.help.hide()
+
+        def ok(session):
+            self.session = session
+            self.cid = session.info.identity['cid']
+            p.picture.set_state('connected')
+            p.timer.stop()
+            after()
+
+        def bad(e):
+            p.picture.set_state('off')
+            p.timer.stop()
+            p.help.hide()
+            p.cancel.setEnabled(False)
+            if not isinstance(e, flow.StepError) and self.device:
+                self.device.close()
+                self.device = None
+            self.failed(e, p, 'Connecting stopped' if not isinstance(e, Cancelled) else 'Stopped waiting')
+        self.resume = lambda: self.start_connect(after)
+        self.run(work, ok, status=status, error=bad)
+
+    # 4. check
+    def page_check(self):
+        p = Page('This is your rabbit r1')
+        p.facts = label('')
+        card, lay = frame('card')
+        lay.addWidget(p.facts)
+        p.body.addWidget(card)
+        p.choice, cl = frame('card')
+        p.update = QRadioButton('Update haretic and keep my data')
+        p.clean = QRadioButton('Clean install: erase everything and start fresh')
+        p.update.setChecked(True)
+        cl.addWidget(label('<b>This r1 already runs haretic</b>'))
+        cl.addWidget(p.update)
+        cl.addWidget(p.clean)
+        p.body.addWidget(p.choice)
+        p.next = label('', 'lead')
+        p.body.addWidget(p.next)
+        p.go = button('Continue', 'primary')
+        p.buttons.addWidget(p.go)
+        p.update.toggled.connect(lambda _: self.check_text())
+        p.go.clicked.connect(self.after_check)
+        return p
+
+    def show_check(self):
+        if self.restore_folder:
+            return self.show_restore_confirm()
+        p = self.p_check
+        info = self.session.info
+        p.error.hide()
+        lk = {'haretic': 'haretic', 'stock': 'rabbitOS (v0.8.293)', 'other': 'rabbitOS'}
+        rows = [('Storage', f'{info.identity["user_size"] / 1e9:.0f} GB eMMC'),
+                ('Running', f'{lk[info.lk[info.slot]]} on slot {info.slot.upper()}'),
+                ('Bootloader', 'unlocked' if info.lock == 'unlocked' else 'locked - the installer unlocks it'),
+                ('Storage ID', info.identity['cid'][:8] + '...')]
+        p.facts.setText('<table cellpadding="4">' + ''.join(
+            f'<tr><td style="color:#9a9a9a;padding-right:18px">{k}</td><td>{v}</td></tr>' for k, v in rows)
+            + '</table>')
+        haretic = info.system == 'haretic' and info.slot == 'a'
+        p.choice.setVisible(haretic)
+        if not haretic:
+            p.clean.setChecked(True)
+        self.check_text()
+        self.show_page(p, 2)
+
+    def check_text(self):
+        p = self.p_check
+        self.mode = 'update' if p.choice.isVisible() and p.update.isChecked() else 'clean'
+        if self.mode == 'update':
+            p.next.setText('Nothing has been changed so far. Next, the installer backs up the r1, then '
+                           'writes the new haretic over the old one. Your apps, files and settings stay.')
+        else:
+            slot_b = self.session.info.slot == 'b'
+            p.next.setText('Nothing has been changed so far. Next, the installer backs up the r1, then '
+                           'unlocks it and installs haretic. ' + (
+                               'The r1 runs from its second slot (B); haretic installs to slot A with '
+                               'the firmware the r1 runs now copied over. ' if slot_b else ''))
+
+    def after_check(self):
+        self.show_backup()
+
+    # 5. back up
+    def page_backup(self):
+        p = Page('Back up the r1', 'A copy of everything on the r1 except your personal data, so the '
+                 'installer can put rabbitOS back later with "Put rabbitOS back from a backup". Keep it '
+                 'somewhere safe.')
+        card, lay = frame('card')
+        p.existing = QRadioButton('')
+        p.fresh = QRadioButton('Make a new backup')
+        p.group = QButtonGroup(p)
+        p.group.addButton(p.existing)
+        p.group.addButton(p.fresh)
+        lay.addWidget(p.existing)
+        lay.addWidget(p.fresh)
+        row = QHBoxLayout()
+        p.folder = label('', 'small')
+        row.addWidget(p.folder, 1)
+        p.change = button('Change folder...')
+        row.addWidget(p.change)
+        lay.addLayout(row)
+        p.userdata = QCheckBox('Also back up personal data (userdata) - about 116 GB more, and slow')
+        lay.addWidget(p.userdata)
+        p.body.addWidget(card)
+        p.progress = Progress()
+        p.progress.hide()
+        p.body.addWidget(p.progress)
+        p.cancel = button('Stop')
+        p.cancel.hide()
+        p.go = button('Back up', 'primary')
+        p.buttons.addWidget(p.cancel)
+        p.buttons.addWidget(p.go)
+        p.root = paths.backups()
+        p.change.clicked.connect(self.change_backup_folder)
+        p.go.clicked.connect(self.start_backup)
+        p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
+        p.on_error = lambda: (p.cancel.hide(), p.go.setEnabled(True))
+        p.existing.toggled.connect(lambda on: p.go.setText('Continue' if on else 'Back up'))
+        return p
+
+    def show_backup(self):
+        p = self.p_backup
+        p.error.hide()
+        p.progress.hide()
+        p.go.setEnabled(True)
+        p.cancel.hide()
+        self.backup_choices()
+        self.show_page(p, 3)
+
+    def backup_choices(self):
+        p = self.p_backup
+        found = flow.backups(p.root, self.cid)
+        p.found = found[0][0] if found else None
+        p.existing.setVisible(bool(found))
+        if found:
+            when = found[0][1]['created'].replace('T', ' ')[:16]
+            p.existing.setText(f'Use the backup of this r1 from {when}')
+            p.existing.setChecked(True)
+        else:
+            p.fresh.setChecked(True)
+        free = flow.shutil.disk_usage(p.root).free
+        p.folder.setText(f'Saved in {p.root} - {size(free)} free')
+        p.go.setText('Continue' if found else 'Back up')
+
+    def change_backup_folder(self):
+        p = self.p_backup
+        folder = QFileDialog.getExistingDirectory(self, 'Where to keep the backup', p.root)
+        if folder:
+            p.root = folder
+            self.backup_choices()
+
+    def start_backup(self):
+        p = self.p_backup
+        p.error.hide()
+        if p.existing.isVisible() and p.existing.isChecked():
+            self.backup_folder = p.found
+            self.log(f'using backup {p.found}')
+            return self.confirm_writes()
+        p.go.setEnabled(False)
+        p.cancel.show()
+        p.progress.show()
+        p.progress.reset('Starting the backup')
+        self.step_safe = True
+        userdata = p.userdata.isChecked()
+
+        def ok(folder):
+            self.backup_folder = folder
+            p.cancel.hide()
+            p.progress.status.setText(f'Backup saved in {folder}')
+            self.confirm_writes()
+        self.resume = self.start_backup
+        self.run(lambda job: self.with_reporter(job, self.session.backup, p.root, userdata), ok, p.progress)
+
+    def with_reporter(self, job, fn, *args):
+        self.session.rep = job
+        return fn(*args)
+
+    def confirm_writes(self):
+        if self.mode == 'update':
+            return self.start_install_writes()
+        box = QMessageBox(self)
+        box.setWindowTitle('Erase the r1 and install haretic?')
+        box.setText('<b>Erase the r1 and install haretic?</b>')
+        box.setInformativeText('Everything on the r1 is erased: rabbitOS, apps, files and settings. '
+                               f'The backup in {self.backup_folder} can put rabbitOS back.')
+        go = box.addButton('Erase and install', QMessageBox.DestructiveRole)
+        box.addButton('Not now', QMessageBox.RejectRole)
+        box.setDefaultButton(go)
+        box.exec()
+        if box.clickedButton() is go:
+            self.start_unlock()
+        else:
+            self.log('install not confirmed')
+
+    # 6. unlock
+    def page_unlock(self):
+        p = Page('Unlock the bootloader', 'The r1 only starts software rabbit has signed. Unlocking lets '
+                 'it start haretic. The installer does it with mtkclient, which changes one small '
+                 'record (seccfg); your backup keeps the original.')
+        p.progress = Progress()
+        p.progress.unit_bytes = False
+        p.body.addWidget(p.progress)
+        return p
+
+    def start_unlock(self):
+        p = self.p_unlock
+        self.show_page(p, 4)
+        p.error.hide()
+        p.progress.reset('Unlocking')
+        self.step_safe = 'If the r1 was unplugged during this, it may not start until the unlock is ' \
+                         'finished. Reconnect it and press Try again.'
+
+        def ok(changed):
+            p.progress.bar.setValue(1000)
+            p.progress.status.setText('Unlocked' if changed else 'The bootloader was already unlocked')
+            QTimer.singleShot(1200, self.start_install_writes)
+        self.resume = self.start_unlock
+        self.run(lambda job: self.with_reporter(job, self.session.unlock), ok, p.progress)
+
+    # 7. install
+    def page_install(self):
+        p = Page('Install haretic', 'Writing haretic to the r1. Every piece is read back and checked. '
+                 'Keep the r1 plugged in; if the cable comes out, plug it back in and press Try again - '
+                 'the r1 can always be reconnected.')
+        p.progress = Progress()
+        p.body.addWidget(p.progress)
+        p.items = label('', 'small')
+        p.body.addWidget(p.items)
+        return p
+
+    def start_install_writes(self):
+        p = self.p_install
+        self.show_page(p, 5)
+        p.error.hide()
+        p.progress.reset('Preparing')
+        self.step_safe = False
+        p.done = []
+
+        def status(text):
+            if text.startswith('Writing '):
+                if p.done and p.done[-1] != text:
+                    pass
+                p.done.append(text[8:])
+                shown = p.done[-6:]
+                p.items.setText('<br>'.join((f'<span style="color:{ORANGE}">-</span> ' if i == len(shown) - 1
+                                             else '<span style="color:#6c6c6c">done</span> ') + t
+                                            for i, t in enumerate(shown)))
+
+        def ok(_):
+            p.progress.bar.setValue(1000)
+            p.progress.status.setText('Installed')
+            self.start_boot()
+        self.resume = self.start_install_writes
+        self.run(lambda job: self.with_reporter(job, self.session.install, self.pkg, self.mode), ok,
+                 p.progress, status=status)
+
+    # 8. start
+    def page_done(self):
+        p = Page('haretic is starting')
+        p.open = button('Open the backup folder')
+        p.close = button('Done', 'primary')
+        p.buttons.addWidget(p.open)
+        p.buttons.addWidget(p.close)
+        p.open.clicked.connect(lambda: self.backup_folder and QDesktopServices.openUrl(
+            QUrl.fromLocalFile(self.backup_folder)))
+        p.close.clicked.connect(self.close)
+        return p
+
+    def start_boot(self):
+        p = self.p_done
+        steps = STEPS if not self.restore_folder else RESTORE_STEPS
+
+        def ok(_):
+            self.device = None
+            self.stepper.set(len(steps))
+            p.lead.show()
+            if self.restore_folder:
+                p.title.setText('rabbitOS is back')
+                p.lead.setText('The r1 restarts into rabbitOS now. You can unplug it.')
+            else:
+                p.title.setText('haretic is starting')
+                p.lead.setText(
+                    'The r1 restarts now. The first start takes a few minutes: haretic sets up its '
+                    'storage while the screen shows the haret1c logo. You can unplug the r1.<br><br>'
+                    f'Your backup is in {self.backup_folder}. To put rabbitOS back, open this '
+                    'installer and choose "Put rabbitOS back from a backup".')
+            self.show_page(p)
+        self.resume = self.start_boot
+        self.run(lambda job: self.with_reporter(job, self.session.boot), ok)
+
+    # restore
+    def page_restore(self):
+        p = Page('Put rabbitOS back', 'Writes a backup made by this installer back to the r1 it came '
+                 'from. Everything the installer changed returns to how it was; haretic and its data '
+                 'are erased.')
+        card, lay = frame('card')
+        p.chosen = label('No backup chosen.', 'small')
+        lay.addWidget(p.chosen)
+        p.pick = button('Choose a backup folder...')
+        lay.addWidget(p.pick)
+        p.body.addWidget(card)
+        p.progress = Progress()
+        p.progress.hide()
+        p.body.addWidget(p.progress)
+        p.back = button('Back')
+        p.go = button('Continue', 'primary')
+        p.go.setEnabled(False)
+        p.buttons.addWidget(p.back)
+        p.buttons.addWidget(p.go)
+        p.pick.clicked.connect(self.pick_backup)
+        p.back.clicked.connect(self.show_welcome)
+        p.go.clicked.connect(lambda: self.start_connect(after=self.show_check))
+        return p
+
+    def show_restore(self):
+        self.stepper.set_steps(RESTORE_STEPS)
+        p = self.p_restore
+        found = flow.backups(paths.backups())
+        if found and not self.restore_folder:
+            self.set_restore(found[0][0], found[0][1])
+        self.show_page(p, 0)
+
+    def pick_backup(self):
+        folder = QFileDialog.getExistingDirectory(self, 'Choose the backup folder', paths.backups())
+        if not folder:
+            return
+        m = flow.read_manifest(folder)
+        if not m or not m.get('complete'):
+            QMessageBox.warning(self, paths.NAME, 'That folder is not a complete r1 backup.')
+            return
+        self.set_restore(folder, m)
+
+    def set_restore(self, folder, m):
+        p = self.p_restore
+        self.restore_folder = folder
+        self.cid = m['device']['cid']
+        p.chosen.setText(f'{folder}<br>made {m["created"].replace("T", " ")[:16]}, r1 storage ID '
+                         f'{self.cid[:8]}...')
+        p.go.setEnabled(True)
+
+    def show_restore_confirm(self):
+        p = self.p_restore
+        self.show_page(p, 2)
+        box = QMessageBox(self)
+        box.setWindowTitle('Put rabbitOS back?')
+        box.setText('<b>Put rabbitOS back on this r1?</b>')
+        box.setInformativeText('haretic and everything in it are erased; the r1 returns to the backup.')
+        go = box.addButton('Restore', QMessageBox.DestructiveRole)
+        box.addButton('Not now', QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        self.start_restore()
+
+    def start_restore(self):
+        p = self.p_restore
+        self.show_page(p, 3)
+        p.error.hide()
+        p.progress.show()
+        p.progress.reset('Restoring')
+        p.go.setEnabled(False)
+        self.step_safe = False
+        self.resume = self.start_restore
+        self.run(lambda job: self.with_reporter(job, self.session.restore, self.restore_folder),
+                 lambda _: self.start_boot(), p.progress)
+
+    def closeEvent(self, event):
+        busy = self.job is not None and self.job.isRunning()
+        if busy:
+            answer = QMessageBox.question(self, paths.NAME, 'The installer is still working. Stop it and '
+                                          'close? If it is writing to the r1, run the step again later.')
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.job.stop = True
+            self.job.wait(15000)
+        if self.device:
+            self.device.close()
+        event.accept()
+
+
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
+    from .device import frozen_stdio
+    frozen_stdio(os.path.join(paths.logs(), 'console.log'))
+    app = QApplication(argv)
+    app.setApplicationName(paths.NAME)
+    app.setDesktopFileName('io.github.haretic.installer')
+    for icon in (paths.resource('io.github.haretic.installer.png'),
+                 paths.resource('packaging', 'io.github.haretic.installer.png')):
+        if os.path.exists(icon):
+            app.setWindowIcon(QIcon(icon))
+            break
+    demo = None
+    for a in argv[1:]:
+        if a.startswith('--demo'):
+            demo = float(a.split('=', 1)[1]) * 1e6 if '=' in a else 60e6
+    w = Window(demo=demo)
+    w.show()
+    return app.exec()

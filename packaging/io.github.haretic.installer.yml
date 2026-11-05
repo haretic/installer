@@ -1,0 +1,32 @@
+app-id: io.github.haretic.installer
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: haretic-installer
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=all
+  - --share=network
+  - --filesystem=home
+  # USB access rule for the r1, installed on the host with pkexec on first launch
+  - --talk-name=org.freedesktop.Flatpak
+modules:
+  - name: haretic-installer
+    buildsystem: simple
+    build-commands:
+      - cp -a haretic-installer /app/lib/haretic-installer
+      - mkdir -p /app/bin && ln -s ../lib/haretic-installer/haretic-installer /app/bin/haretic-installer
+      - install -Dm644 io.github.haretic.installer.desktop /app/share/applications/io.github.haretic.installer.desktop
+      - install -Dm644 io.github.haretic.installer.svg /app/share/icons/hicolor/scalable/apps/io.github.haretic.installer.svg
+      - install -Dm644 io.github.haretic.installer.metainfo.xml /app/share/metainfo/io.github.haretic.installer.metainfo.xml
+    sources:
+      - type: dir
+        path: ../build/flatpak-input
+      - type: file
+        path: io.github.haretic.installer.desktop
+      - type: file
+        path: io.github.haretic.installer.svg
+      - type: file
+        path: io.github.haretic.installer.metainfo.xml

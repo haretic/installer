@@ -143,7 +143,20 @@ class UsbClass(DeviceClass):
         self.is_serial = False
         self.queue = Queue()
         if sys.platform.startswith('freebsd') or sys.platform.startswith('linux') or sys.platform.startswith('darwin'):
-            self.backend = usb.backend.libusb1.get_backend(find_library=lambda x: "libusb-1.0.so")
+            # A frozen build's own copy first, then the runtime library's names: the bare .so
+            # exists only where libusb's development files are installed
+            names = ["libusb-1.0.dylib", "libusb-1.0.0.dylib"] if sys.platform.startswith('darwin') \
+                else ["libusb-1.0.so.0", "libusb-1.0.so"]
+            bundled = getattr(sys, '_MEIPASS', None)
+            candidates = [os.path.join(bundled, n) for n in names] if bundled else []
+            candidates += names
+            if sys.platform.startswith('darwin'):
+                candidates += ["/opt/homebrew/lib/libusb-1.0.dylib", "/usr/local/lib/libusb-1.0.dylib"]
+            self.backend = None
+            for name in candidates:
+                self.backend = usb.backend.libusb1.get_backend(find_library=lambda x, n=name: n)
+                if self.backend is not None:
+                    break
         elif sys.platform.startswith('win32'):
             if calcsize("P") * 8 == 64:
                 self.backend = usb.backend.libusb1.get_backend(find_library=lambda x: "libusb-1.0.dll")
