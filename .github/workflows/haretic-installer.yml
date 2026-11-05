@@ -80,10 +80,12 @@ jobs:
         if: matrix.target == 'linux'
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user --noninteractive flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08
+          # The current flatpak-builder from Flathub: the distro's (22.04) still calls
+          # appstream-compose, which the 25.08 SDK no longer has
+          flatpak install --user --noninteractive flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.flatpak.Builder
           rm -rf build/flatpak-input && mkdir -p build/flatpak-input
           cp -a build/dist/haretic-installer build/flatpak-input/
-          flatpak-builder --user --force-clean --repo=build/flatpak-repo build/flatpak packaging/io.github.haretic.installer.yml
+          flatpak run --user org.flatpak.Builder --user --force-clean --repo=build/flatpak-repo build/flatpak packaging/io.github.haretic.installer.yml
           flatpak build-bundle build/flatpak-repo "dist/haretic-installer-${VERSION}-linux-${ARCH}.flatpak" io.github.haretic.installer
       - name: Windows setup and portable
         if: matrix.target == 'windows'

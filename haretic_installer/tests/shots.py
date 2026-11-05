@@ -26,7 +26,7 @@ def shot(name):
     w.grab().save(os.path.join(out, f'{n[0]:02d}-{name}.png'))
 
 
-def wait(cond, ms=900000):
+def wait(cond, ms=2400000):
     import time
     t = time.time()
     while not cond():

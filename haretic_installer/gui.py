@@ -11,7 +11,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
+                               QRadioButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import drivers, flow, package, paths, r1
 from .device import Cancelled, DeviceError, MtkDevice, SimDevice
@@ -28,6 +28,7 @@ QLabel#small, QLabel#hint {{ color: #9a9a9a; font-size: 13px; }}
 QLabel#status {{ font-size: 15px; color: #ffffff; }}
 QFrame#card {{ background: #1e1e1e; border: 1px solid #2c2c2c; border-radius: 10px; }}
 QFrame#card QLabel, QFrame#card QRadioButton, QFrame#card QCheckBox {{ background: transparent; }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QFrame#warn {{ background: #2a1d16; border: 1px solid #6b3a22; border-radius: 10px; }}
 QFrame#warn QLabel {{ background: transparent; color: #f3d2c2; }}
 QFrame#error {{ background: #2a1515; border: 1px solid #7a2c2c; border-radius: 10px; }}
@@ -255,8 +256,20 @@ def button(text, name=None):
 class Page(QWidget):
     def __init__(self, title, lead=''):
         super().__init__()
-        self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(36, 30, 36, 24)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # The content keeps its own height and scrolls when the details take the room; the
+        # buttons stay put below it
+        content = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll, 1)
+        self.lay = QVBoxLayout(content)
+        self.lay.setContentsMargins(36, 30, 36, 12)
         self.lay.setSpacing(14)
         self.title = label(title, 'title')
         self.lay.addWidget(self.title)
@@ -268,8 +281,9 @@ class Page(QWidget):
         self.lay.addLayout(self.body)
         self.lay.addStretch(1)
         self.buttons = QHBoxLayout()
+        self.buttons.setContentsMargins(36, 12, 36, 24)
         self.buttons.addStretch(1)
-        self.lay.addLayout(self.buttons)
+        outer.addLayout(self.buttons)
 
 
 class Progress(QWidget):
