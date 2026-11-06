@@ -1071,10 +1071,11 @@ class Window(QWidget):
         running = lk[info.lk[info.slot]]
         if haretic and info.installed:
             i = info.installed
-            running = ', '.join([i['version'] or 'haretic'] + ['plain LineageOS (aosp)'] * bool(i['aosp'])
-                                + ['with Google apps'] * bool(i['gapps']) + ['rooted (Magisk)'] * bool(i['root']))
+            extras = ['plain LineageOS (aosp)'] * bool(i['aosp']) + ['with Google apps'] * bool(i['gapps']) \
+                + ['rooted (Magisk)'] * bool(i['root'])
+            running = ' - '.join([i['version'] or 'haretic'] + [', '.join(extras)] * bool(extras))
         rows = [('Storage', f'{info.identity["user_size"] / 1e9:.0f} GB eMMC'),
-                ('Running', f'{running} on slot {info.slot.upper()}'),
+                ('Running', f'{running} <span style="color:#9a9a9a">- slot {info.slot.upper()}</span>'),
                 ('Bootloader', 'unlocked' if info.lock == 'unlocked' else 'locked - the installer unlocks it'),
                 ('Storage ID', info.identity['cid'][:8] + '...')]
         p.facts.setText('<table cellpadding="4">' + ''.join(
@@ -1112,24 +1113,24 @@ class Window(QWidget):
         p = self.p_check
         self.mode = 'update' if not p.choice.isHidden() and p.update.isChecked() else 'clean'
         if self.update_blocked():
-            p.why_text.setText('<b>Updating with your data kept is not possible</b><br>'
-                               + '<br>'.join(t for k, t in self.problems if k != 'warn'))
+            p.why_text.setText('<b>Updating with your data kept is not possible</b>'
+                               + bullets(t for k, t in self.problems if k != 'warn'))
         elif self.mode == 'update' and self.update_warnings():
-            p.why_text.setText('<b>This update changes what the r1 has</b><br>' + '<br>'.join(self.update_warnings()))
+            p.why_text.setText('<b>This update changes what the r1 has</b>' + bullets(self.update_warnings()))
         p.why.setVisible(self.update_blocked() or self.mode == 'update' and bool(self.update_warnings()))
+        none = '<b>Nothing has been changed so far.</b> '
         if self.mode == 'update':
-            p.next.setText('Nothing has been changed so far. Next, the installer writes the new haretic '
-                           'over the old one. Your apps, files and settings stay. A backup first is '
-                           'optional.')
+            p.next.setText(none + 'Next, the installer writes the new haretic over the old one. Your apps, '
+                           'files and settings stay. A backup first is optional.')
         elif not p.choice.isHidden():
-            p.next.setText('Nothing has been changed so far. Next, the installer erases the r1 and installs '
-                           'haretic fresh. A backup first is optional.')
+            p.next.setText(none + 'Next comes an optional backup; then the installer erases the r1 and '
+                           'installs haretic fresh. You confirm before anything is erased.')
         else:
             slot_b = self.session.info.slot == 'b'
-            p.next.setText('Nothing has been changed so far. Next, the installer backs up the r1, then '
-                           'unlocks it and installs haretic. ' + (
-                               'The r1 runs from its second slot (B); haretic installs to slot A with '
-                               'the firmware the r1 runs now copied over. ' if slot_b else ''))
+            p.next.setText(none + 'Next, the installer backs up rabbitOS, then unlocks the r1 and installs '
+                           'haretic. You confirm before anything is erased.' + (
+                               ' This r1 runs rabbitOS from its second slot (B), so the installer copies its '
+                               'firmware over to slot A, where haretic goes.' if slot_b else ''))
 
     def after_check(self):
         self.show_backup()
