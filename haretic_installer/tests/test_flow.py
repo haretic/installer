@@ -408,6 +408,20 @@ class Names(unittest.TestCase):
             self.assertEqual(package.download(rel, d), os.path.join(d, name))
             self.assertEqual(open(os.path.join(d, name), 'rb').read(), data)
 
+    def test_damaged_manifest(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
+            for manifest in ([], {'schema': 1, 'product': 'haretic_r1'},
+                             {'schema': 1, 'product': 'haretic_r1', 'images': {
+                                 k: {'file': n, 'size': 1, 'sha256': '0'} for k, n, _ in package.IMAGES}}):
+                path = os.path.join(d, 'p.tar.xz')
+                blob = json.dumps(manifest).encode()
+                with tarfile.open(path, 'w:xz') as t:
+                    info = tarfile.TarInfo('manifest.json')
+                    info.size = len(blob)
+                    t.addfile(info, __import__('io').BytesIO(blob))
+                with self.assertRaises(package.PackageError, msg=manifest):
+                    package.Package(path)
+
 
 if __name__ == '__main__':
     unittest.main()

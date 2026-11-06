@@ -62,14 +62,17 @@ class Package:
     def __init__(self, path, unpack_root=None):
         self.path = path
         self.manifest = m = _manifest(path)
-        if m.get('schema') != 1 or m.get('product') != 'haretic_r1':
+        if not isinstance(m, dict) or m.get('schema') != 1 or m.get('product') != 'haretic_r1':
             raise PackageError('This package is not for the rabbit r1, or needs a newer installer.')
         for key, name, limit in IMAGES:
             image = m.get('images', {}).get(key)
-            if not image or image.get('file') != name:
+            if not image or image.get('file') != name or not isinstance(image.get('size'), int) \
+                    or not isinstance(image.get('sha256'), str):
                 raise PackageError(f'The package has no {name}.')
             if limit and image['size'] > limit:
                 raise PackageError(f'{name} is larger than its partition.')
+        if not isinstance(m.get('version'), str):
+            raise PackageError('The package does not say which haretic it is.')
         self.version = m['version']
         self.gapps = bool(m.get('gapps'))
         self.root = bool(m.get('root'))
