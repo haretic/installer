@@ -547,6 +547,12 @@ class Window(QWidget):
     # 0. one-time USB setup
     def page_setup(self):
         p = Page('One-time setup: USB access')
+        p.lead.show()
+        p.ids = label('', 'small')
+        p.body.addWidget(p.ids)
+        p.skip_note = label('Skip only if this computer can already reach the r1 over USB; without '
+                            'it, the installer cannot find the r1.', 'small')
+        p.body.addWidget(p.skip_note)
         p.progress = Progress()
         p.progress.unit_bytes = True
         p.progress.hide()
@@ -565,23 +571,27 @@ class Window(QWidget):
         ids = ', '.join(f'{r1.VENDOR:04X}:{pid:04X} ({name})' for pid, name in r1.USB_IDS.items())
         if need == 'usbdk':
             p.lead.setText(
-                'To talk to the r1, this computer needs <b>UsbDk</b>, a free, signed USB driver from '
-                'the daynix project (Red Hat). It covers the r1 in each of its USB modes: ' + ids +
-                '. The installer downloads UsbDk 1.0.22 from its official release, checks it, and '
-                'Windows asks you for permission to install it. This is needed once.')
+                'Before the first install, this computer needs <b>UsbDk</b>, a free, signed USB driver '
+                'from the daynix project (Red Hat), to talk to the r1. The installer downloads UsbDk '
+                '1.0.22 from its official release and checks it; Windows then asks you to allow the '
+                'install. This is needed only once.')
+            p.ids.setText('UsbDk covers the r1 in each of its USB modes: ' + ids + '.')
             p.go.setText('Install the USB driver')
         else:
             p.lead.setText(
-                'To talk to the r1 without administrator rights, Linux needs a small rule that lets '
-                'you use its USB modes (' + ids + ') and keeps ModemManager from grabbing it. The '
-                'installer adds it to /etc/udev/rules.d; it asks for your password. This is needed once.')
+                'Before the first install, Linux needs a small rule that lets you use the r1 over USB '
+                'without administrator rights. The installer adds it to /etc/udev/rules.d and asks '
+                'for your password. This is needed only once.')
+            p.ids.setText('The rule covers the r1 in each of its USB modes (' + ids + ') and keeps '
+                          'ModemManager from grabbing it.')
             p.go.setText('Allow USB access')
         self.stepper.set_steps(STEPS)
-        self.show_page(p, 0)
+        self.show_page(p, -1)  # before the first step
 
     def setup_usb(self):
         p = self.p_setup
         p.go.setEnabled(False)
+        p.skip.setEnabled(False)
         p.progress.show()
         p.progress.reset('Downloading UsbDk' if self.need == 'usbdk' else 'Waiting for your password')
 
@@ -595,6 +605,7 @@ class Window(QWidget):
 
         def ok(restart):
             p.go.setEnabled(True)
+            p.skip.setEnabled(True)
             if restart:
                 QMessageBox.information(self, paths.NAME, 'The USB driver is installed. Windows asks '
                                         'for a restart; restart, then open the installer again.')
@@ -603,6 +614,7 @@ class Window(QWidget):
 
         def bad(e):
             p.go.setEnabled(True)
+            p.skip.setEnabled(True)
             self.failed(e, p, 'USB access was not set up')
         self.resume = self.setup_usb
         self.run(work, ok, p.progress, error=bad)
