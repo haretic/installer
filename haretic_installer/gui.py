@@ -34,6 +34,8 @@ QFrame#warn {{ background: #2a1d16; border: 1px solid #6b3a22; border-radius: 10
 QFrame#warn QLabel {{ background: transparent; color: #f3d2c2; }}
 QFrame#error {{ background: #2a1515; border: 1px solid #7a2c2c; border-radius: 10px; }}
 QFrame#error QLabel {{ background: transparent; }}
+QFrame#error[calm="true"] {{ background: #1e1e1e; border-color: #3a3a3a; }}
+QFrame#error QLabel#status {{ font-weight: 600; }}
 QFrame#side {{ background: #101010; border-right: 1px solid #242424; }}
 QFrame#side QLabel {{ background: transparent; }}
 QPushButton {{ background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 9px 18px; }}
@@ -408,7 +410,7 @@ class ErrorCard(QFrame):
         self.text = label('')
         self.safety = label('', 'small')
         self.hint = label('', 'small')
-        for w in (self.head, self.text, self.hint, self.safety):
+        for w in (self.head, self.text, self.safety, self.hint):
             lay.addWidget(w)
         row = QHBoxLayout()
         self.retry = button('Try again', 'primary')
@@ -421,9 +423,12 @@ class ErrorCard(QFrame):
         lay.addLayout(row)
         self.save.clicked.connect(window.save_log)
         self.details.clicked.connect(window.toggle_log)
+        self.on_retry = None
         self.hide()
 
-    def show_error(self, head, text, safe, hint=None):
+    def show_error(self, head, text, safe, hint=None, calm=False, retry='Try again'):
+        """safe: True, False, a sentence of its own, or None where no r1 is involved. calm: the
+        user stopped it, which is no error."""
         self.head.setText(head)
         self.text.setText(text)
         self.hint.setText(hint or '')
@@ -431,8 +436,14 @@ class ErrorCard(QFrame):
         self.safety.setText(
             'Nothing on the r1 was changed by this step. It is safe to unplug it.' if safe is True else
             'The step did not finish, so the r1 will not start right now. That is recoverable: the '
-            'r1 can always be reconnected, and Try again finishes the job.' if safe is False else safe)
+            f'r1 can always be reconnected, and {retry} finishes the job.' if safe is False else safe or '')
+        self.safety.setVisible(bool(self.safety.text()))
+        self.retry.setText(retry)
+        self.setProperty('calm', calm)
+        self.style().unpolish(self)
+        self.style().polish(self)
         self.show()
+        self.retry.setFocus()
 
 
 # -- the window
@@ -519,7 +530,10 @@ class Window(QWidget):
 
     def toggle_log(self):
         self.log_view.setVisible(not self.log_view.isVisible())
-        self.log_toggle.setText('Hide details' if self.log_view.isVisible() else 'Show details')
+        text = 'Hide details' if self.log_view.isVisible() else 'Show details'
+        self.log_toggle.setText(text)
+        for i in range(self.pages.count()):
+            self.pages.widget(i).error.details.setText(text)
 
     def save_log(self):
         path, _ = QFileDialog.getSaveFileName(self, 'Save the log', os.path.join(
@@ -550,18 +564,23 @@ class Window(QWidget):
         if main:
             main[-1].setFocus()
 
-    def failed(self, e, page=None, head='This step stopped'):
+    def failed(self, e, page=None, head=None):
         """Show an exception on the current page's error card."""
         page = page or self.pages.currentWidget()
         card = page.error
-        safe, hint = True, None
+        head = head or getattr(page, 'stopped', 'This step stopped')
+        # Before the r1 is connected, nothing can have happened to it
+        safe = None if page in (self.p_setup, self.p_welcome, self.p_download) else True
+        hint, calm, again = None, False, 'Try again'
         retry = self.retry_step
         if isinstance(e, Cancelled):
-            text = 'You stopped it.'
+            text, calm = 'You stopped it.', True
+            again = 'Wait again' if page is self.p_connect else 'Continue'
         elif isinstance(e, r1.NotAnR1):
             head = 'This does not look like a rabbit r1'
             text = str(e)
-            hint = 'The installer only installs on an r1. Unplug the device.'
+            safe = 'Nothing on the device was changed. It is safe to unplug it.'
+            hint = 'The installer only works with a rabbit r1. Unplug this device, connect an r1, then press Try again.'
             retry = self.start_connect
         elif isinstance(e, flow.StepError):
             text, safe, hint = str(e), e.safe, e.hint
@@ -576,14 +595,13 @@ class Window(QWidget):
         else:
             text = f'Something unexpected happened: {type(e).__name__}: {e}'
             hint = 'The details have the full error; please save the log and report it.'
-        self.stepper.set(self.stepper.current, failed=True)
-        try:
-            card.retry.clicked.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        card.retry.clicked.connect(lambda: (card.hide(), self.stepper.set(self.stepper.current), retry()))
-        card.show_error(head, text, safe, hint)
-        self.log(f'error: {head}: {text}')
+        self.stepper.set(self.stepper.current, failed=not calm)
+        if card.on_retry:
+            card.retry.clicked.disconnect(card.on_retry)
+        card.on_retry = lambda: (card.hide(), self.stepper.set(self.stepper.current), retry())
+        card.retry.clicked.connect(card.on_retry)
+        card.show_error(head, text, safe, hint, calm, again)
+        self.log(f'{"stopped" if calm else "error"}: {head}: {text}')
         if hasattr(page, 'on_error'):
             page.on_error()
 
@@ -823,6 +841,8 @@ class Window(QWidget):
         p.cancel = button('Stop')
         p.buttons.addWidget(p.cancel)
         p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
+        p.stopped = 'Getting haretic stopped'
+        p.on_error = lambda: p.cancel.setEnabled(False)
         return p
 
     def start_install(self):
@@ -832,6 +852,7 @@ class Window(QWidget):
         self.show_page(p, 0)
         p.progress.reset('Preparing')
         p.error.hide()
+        p.cancel.setEnabled(True)
         online = self.p_welcome.online.isChecked()
 
         def work(job):
@@ -1084,6 +1105,7 @@ class Window(QWidget):
         p.go.clicked.connect(self.start_backup)
         p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
         p.on_error = lambda: (p.cancel.hide(), p.go.setEnabled(True))
+        p.stopped = 'The backup stopped'
         p.group.buttonToggled.connect(lambda *_: self.backup_button())
         return p
 
@@ -1240,6 +1262,7 @@ class Window(QWidget):
         p.progress = Progress()
         p.progress.unit_bytes = False
         p.body.addWidget(p.progress)
+        p.stopped = 'Unlocking stopped'
         return p
 
     def start_unlock(self):
@@ -1267,6 +1290,7 @@ class Window(QWidget):
         p.body.addWidget(p.progress)
         p.items = label('', 'small')
         p.body.addWidget(p.items)
+        p.stopped = 'Installing stopped'
         return p
 
     def start_install_writes(self):
@@ -1352,6 +1376,7 @@ class Window(QWidget):
         p.go.setEnabled(False)
         p.buttons.addWidget(p.back)
         p.buttons.addWidget(p.go)
+        p.stopped = 'Restoring stopped'
         p.pick.clicked.connect(self.pick_backup)
         p.back.clicked.connect(self.show_welcome)
         p.go.clicked.connect(lambda: self.start_connect(after=self.show_check))
