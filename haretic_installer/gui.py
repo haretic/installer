@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import traceback
+import urllib.error
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
@@ -627,6 +628,12 @@ class Window(QWidget):
             hint = ('To go on, reconnect the r1: unplug it, hold its side button for about 10 seconds '
                     'until the screen stays dark, then plug it in again and press Try again.')
             retry = self.reconnect
+        elif isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError)):
+            text = f'Could not reach the download server ({getattr(e, "reason", None) or e}).'
+            hint = 'Check the internet connection, then press Try again.' + (
+                ' The download continues where it stopped.' if page is self.p_download else '')
+        elif isinstance(e, OSError) and e.strerror:
+            text = f'{e.strerror}: {e.filename}' if e.filename else e.strerror
         elif isinstance(e, (package.PackageError, OSError)):
             text = str(e)
         else:
@@ -745,6 +752,9 @@ class Window(QWidget):
         def bad(e):
             p.go.setEnabled(True)
             p.skip.setEnabled(True)
+            if type(e) is RuntimeError:  # the driver steps' own words
+                e = flow.StepError(str(e), safe=None, hint='Press Try again and allow the ' + (
+                    'Windows prompt.' if self.need == 'usbdk' else 'password prompt.'))
             self.failed(e, p, 'USB access was not set up')
         self.resume = self.setup_usb
         self.run(work, ok, p.progress, status=lambda _: self.need == 'usbdk' and p.progress.busy(), error=bad)
