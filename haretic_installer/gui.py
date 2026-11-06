@@ -858,6 +858,7 @@ class Window(QWidget):
                 p.again.show()
                 self.log(f'release lookup: {e}')
             self.run(lambda job: package.latest(), ok, error=bad)
+            self.job.quiet = True  # only looks online: closing needs no question
 
     def choose_package(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Choose a haretic install package', paths.downloads(),
@@ -1580,9 +1581,11 @@ class Window(QWidget):
     def closeEvent(self, event):
         busy = self.job is not None and self.job.isRunning()
         if busy:
-            if not self.ask('Stop and close?', 'The installer is still working; closing stops it. If it is '
-                            'writing to the r1, the r1 may not start until you open the installer again '
-                            'and run the step again.', 'Stop and close', danger=True, cancel='Keep working'):
+            quiet = getattr(self.job, 'quiet', False)
+            if not quiet and not self.ask('Stop and close?', 'The installer is still working; closing stops it. If '
+                                          'it is writing to the r1, the r1 may not start until you open the '
+                                          'installer again and run the step again.', 'Stop and close',
+                                          danger=True, cancel='Keep working'):
                 event.ignore()
                 return
             self.job.stop = True
