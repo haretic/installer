@@ -1347,9 +1347,21 @@ class Window(QWidget):
     # 8. start
     def page_done(self):
         p = Page('haretic is starting')
+        p.keep, kl = frame('warn')
+        kl.addWidget(label('<b>Keep your rabbitOS restore file safe</b>'))
+        kl.addWidget(label('Copy it off this computer too, such as to a USB stick or cloud storage. It is the '
+                           'only way to put rabbitOS back: open this installer and choose "Put rabbitOS back '
+                           'from a backup".'))
+        p.keep_path = label('', 'small')
+        p.keep_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        kl.addWidget(p.keep_path)
+        row = QHBoxLayout()
         p.open = button('Show the restore file')
+        row.addWidget(p.open)
+        row.addStretch(1)
+        kl.addLayout(row)
+        p.body.addWidget(p.keep)
         p.close = button('Done', 'primary')
-        p.buttons.addWidget(p.open)
         p.buttons.addWidget(p.close)
         p.open.clicked.connect(lambda: self.backup_file and self.show_file(self.backup_file))
         p.close.clicked.connect(self.close)
@@ -1367,16 +1379,17 @@ class Window(QWidget):
                 what = self.restore_system
                 p.title.setText(f'{what} is back')
                 p.lead.setText(f'The r1 restarts into {what} now. You can unplug it.')
-                p.open.hide()
+                p.keep.hide()
             else:
                 p.title.setText('haretic is starting')
+                logo = 'LineageOS' if self.pkg and self.pkg.aosp else 'haret1c'
                 p.lead.setText(
-                    'The r1 restarts now. The first start takes a few minutes: haretic sets up its '
-                    'storage while the screen shows the haret1c logo. You can unplug the r1.' + (
-                        f'<br><br><b>Keep {self.backup_file} safe</b>, off this computer too. It is '
-                        'the only way to put rabbitOS back: open this installer and choose "Put '
-                        'rabbitOS back from a backup".' if self.backup_file else ''))
-                p.open.setVisible(bool(self.backup_file))
+                    'The r1 restarts with the new haretic now; your apps, files and settings are kept. The '
+                    'start can take a few minutes. You can unplug the r1.' if self.mode == 'update' else
+                    'The r1 restarts now. The first start takes a few minutes: haretic sets up its storage '
+                    f'while the screen shows the {logo} logo. You can unplug the r1.')
+                p.keep_path.setText(self.backup_file or '')
+                p.keep.setVisible(bool(self.backup_file))
             self.show_page(p)
         self.resume = self.start_boot
         self.run(lambda job: self.with_reporter(job, self.session.boot), ok)
