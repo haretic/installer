@@ -10,7 +10,7 @@ root = pathlib.Path(__file__).resolve().parents[1]
 summary = root / 'release-notes' / (tag + '.md')
 if summary.is_file():
     print(summary.read_text().strip() + '\n')
-base = 'https://github.com/haretic/mtkclient/releases/download/' + quote(tag, safe='') + '/'
+base = 'https://github.com/haretic/installer/releases/download/' + quote(tag, safe='') + '/'
 kinds = [('-setup.exe', 'Setup'), ('-portable.exe', 'Portable EXE'), ('.AppImage', 'AppImage'),
          ('.deb', '.deb'), ('.flatpak', 'Flatpak'), ('.zip', 'App ZIP')]
 rows = []
