@@ -584,8 +584,10 @@ def avb_parse(data):
 
 
 def version_date(version):
-    m = re.match(r'^haretic-(\d{8})-', version or '')
-    return m and m.group(1)
+    """(date, time) of a haretic version, haretic-YYYYMMDD-HHMM-<channel>; builds before the time
+    was added have none, so they sort first on their day."""
+    m = re.match(r'^haretic-(\d{8})-(?:(\d{4})-)?', version or '')
+    return m and (m.group(1), m.group(2) or '')
 
 
 def update_problems(installed, pkg):

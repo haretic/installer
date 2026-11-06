@@ -40,7 +40,7 @@ def sparse_image(path, total, runs):
         f.write(b''.join(chunks))
 
 
-def vbmeta(boot, version='haretic-20261105-beta', style='haretic', gapps='false', size=65536):
+def vbmeta(boot, version='haretic-20261105-1430-beta', style='haretic', gapps='false', size=65536):
     """A vbmeta image as avbtool makes it, unsigned: the haretic properties and boot's hash."""
     def desc(tag, body):
         body += bytes(-len(body) % 8)
@@ -68,8 +68,8 @@ def make_package(folder):
         if key != 'super':
             open(paths[key], 'wb').write(files[key])
     sparse_image(paths['super'], PLACE['super'][1], {0: os.urandom(1 << 20), 0x40000000: os.urandom(3 << 20)})
-    out = os.path.join(folder, package.file_name('haretic-20261105-beta', False, False))
-    package.build(out, paths, 'haretic-20261105-beta')
+    out = os.path.join(folder, package.file_name('haretic-20261105-1430-beta', False, False))
+    package.build(out, paths, 'haretic-20261105-1430-beta')
     assert package.NAME.match(os.path.basename(out))
     return package.Package(out), files
 
@@ -224,14 +224,14 @@ class Flow(unittest.TestCase):
 
     def test_avb_matches_avbtool(self):
         avb = flow.avb_parse(self.files['vbmeta'])
-        self.assertEqual(avb[0]['com.haretic.version'], 'haretic-20261105-beta')
+        self.assertEqual(avb[0]['com.haretic.version'], 'haretic-20261105-1430-beta')
         self.assertEqual(avb[1]['boot'][:2], (0x2000000 - 4096, 'sha256'))
         self.assertIsNone(flow.avb_parse(os.urandom(4096)))
 
     def test_update_guards(self):
         boot = self.files['boot']
-        s, dev = self.haretic_r1(boot, version='haretic-20261201-nightly')
-        self.assertEqual(s.info.installed, {'version': 'haretic-20261201-nightly', 'aosp': False, 'gapps': False,
+        s, dev = self.haretic_r1(boot, version='haretic-20261201-0900-nightly')
+        self.assertEqual(s.info.installed, {'version': 'haretic-20261201-0900-nightly', 'aosp': False, 'gapps': False,
                                             'root': False})
         before = dev.read('user', PLACE['super'][0], 1 << 20)
         with self.assertRaises(StepError):
@@ -255,9 +255,9 @@ class Flow(unittest.TestCase):
     def test_update_from_slot_b(self):
         """After an update over the air the r1 runs slot B: an update reads that build and moves
         the r1 back to slot A."""
-        s, dev = self.haretic_r1(self.files['boot'], slot='b', version='haretic-20261201-nightly')
+        s, dev = self.haretic_r1(self.files['boot'], slot='b', version='haretic-20261201-0900-nightly')
         self.assertEqual(s.info.slot, 'b')
-        self.assertEqual(s.info.installed['version'], 'haretic-20261201-nightly')
+        self.assertEqual(s.info.installed['version'], 'haretic-20261201-0900-nightly')
         self.assertFalse(s.info.installed['root'])
         with self.assertRaises(StepError):
             s.install(self.pkg, 'update')

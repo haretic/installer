@@ -43,10 +43,10 @@ QMessageBox.exec = lambda self: setattr(self, '_clicked', next(
 QMessageBox.clickedButton = lambda self: getattr(self, '_clicked', None)
 w.asked_release = True
 p = w.p_welcome
-w.releases = [{'version': 'haretic-20261105-beta', 'name': package.file_name('haretic-20261105-beta', g, r),
+w.releases = [{'version': 'haretic-20261105-1430-beta', 'name': package.file_name('haretic-20261105-1430-beta', g, r),
                'size': 905000000 + 410000000 * g + 12000000 * r, 'prerelease': True, 'url': '', 'sha256': None,
                'notes': '', 'gapps': g, 'root': r} for g in (False, True) for r in (False, True)]
-p.online.setText('Download haretic-20261105-beta (pre-release)')
+p.online.setText('Download haretic-20261105-1430-beta (pre-release)')
 for c in (p.online, p.gapps, p.root):
     c.setEnabled(True)
 p.online.setChecked(True)
@@ -102,7 +102,7 @@ shot('check-haretic')
 w.p_check.go.click()
 shot('backup-haretic')
 # a newer haretic on the r1: no update keeping data, until five presses on the reason
-w.session.info.installed = {'version': 'haretic-20261201-nightly', 'aosp': False, 'gapps': True, 'root': True}
+w.session.info.installed = {'version': 'haretic-20261201-0900-nightly', 'aosp': False, 'gapps': True, 'root': True}
 w.show_check()
 shot('check-downgrade')
 for _ in range(5):
