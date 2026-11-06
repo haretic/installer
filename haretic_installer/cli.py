@@ -144,6 +144,10 @@ def main(argv=None):
             print(e.hint, file=sys.stderr)
         if isinstance(e, flow.StepError) and not e.safe:
             print('The r1 will not start until the step is finished; run it again.', file=sys.stderr)
+        if isinstance(e, DeviceError):
+            print('Unplug the r1, hold its side button about 10 seconds until the screen stays dark, plug '
+                  'it in and run the same command again. A backup goes on where it stopped; an install '
+                  'or restore cut short leaves the r1 unable to start until it is run again.', file=sys.stderr)
         return 2
     except (Cancelled, KeyboardInterrupt):
         print('\nStopped.', file=sys.stderr)
