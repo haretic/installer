@@ -133,7 +133,17 @@ class Session:
             at += n
 
     def write(self, offset, data, label):
-        """Write bytes and read them back; a mismatch is an error, not a retry."""
+        """Write bytes and read them back; a mismatch is an error, not a retry. Nothing reaches the
+        GPTs or the partitions never written, whatever the caller asks."""
+        end = offset + len(data)
+        size = self.info.identity['user_size']
+        fenced = [(0, GPT_BYTES), (size - 33 * r1.SECTOR, size)] + \
+            [(o, o + n) for name, (o, n) in self.info.parts.items() if name in r1.NEVER_WRITTEN]
+        for lo, hi in fenced:
+            if offset < hi and end > lo:
+                raise StepError(f'The installer refused to write {label} over a protected area of the '
+                                'r1. Nothing there was changed.', safe=False,
+                                hint='Please save the log and report it.')
         at = 0
         while at < len(data):
             self.check()

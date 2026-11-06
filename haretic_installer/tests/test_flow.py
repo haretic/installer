@@ -203,6 +203,19 @@ class Flow(unittest.TestCase):
             s2.restore(path)
         self.assertEqual(self.part(dev, 'boot_a'), boot)
 
+    def test_protected_areas_are_never_written(self):
+        s, dev = self.session()
+        size = s.info.identity['user_size']
+        for name in r1.NEVER_WRITTEN:
+            o, n = s.info.parts[name]
+            for at in (o - 512, o + n - 512):
+                with self.assertRaises(StepError, msg=name):
+                    s.write(at, bytes(1024), name)
+        for at in (0, flow.GPT_BYTES - 512, size - 512):
+            with self.assertRaises(StepError):
+                s.write(at, bytes(512), 'gpt')
+        s.write(PLACE['boot_para'][0], bytes(512), 'boot_para')  # just past the GPT
+
     def test_restore_refuses_a_misplaced_part(self):
         s, dev = self.session()
         s.check_archive = lambda path, text: None  # only the place is under test
