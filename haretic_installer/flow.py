@@ -180,27 +180,31 @@ class Session:
             if hwtype is None:
                 raise StepError('This r1 has a lock record the installer cannot unlock. Nothing '
                                 'was changed.')
-        installed = self.installed() if lk['a'] == 'haretic' else None
-        self.info = Info(identity=identity, parts=parts, gpt=raw, record=rec, slot=r1.record_slot(rec),
+        slot = r1.record_slot(rec)
+        installed = self.installed(slot) if lk.get(slot) == 'haretic' else None
+        self.info = Info(identity=identity, parts=parts, gpt=raw, record=rec, slot=slot,
                          lock=lock, lk=lk, seccfg_type=hwtype, installed=installed)
         self.rep.log('found: ' + json.dumps(self.info.summary()))
         return self.info
 
-    def installed(self):
-        """The haretic build on slot A, from its signed vbmeta: {version, aosp, gapps, root}, each None
-        where it can't tell. The build's own properties give the version, style and Google apps;
-        root is whether boot_a still matches the hash vbmeta signed, as Magisk patches it."""
+    def installed(self, slot='a'):
+        """The haretic build on the slot in use (B after an update over the air), from its signed
+        vbmeta: {version, aosp, gapps, root}, each None where it can't tell. The build's own
+        properties give the version, style and Google apps; root is whether boot still matches the
+        hash vbmeta signed, as Magisk patches it."""
         self.rep.status('Reading which haretic is installed')
-        avb = avb_parse(self.dev.read('user', PLACE['vbmeta_a'][0], VBMETA_READ))
+        slot = slot if slot in ('a', 'b') else 'a'
+        vbmeta, boot = PLACE['vbmeta_' + slot], PLACE['boot_' + slot]
+        avb = avb_parse(self.dev.read('user', vbmeta[0], VBMETA_READ))
         if avb is None:
             return None
         props, hashes = avb
         root = None
-        if hashes.get('boot', (0, 'none'))[1] == 'sha256' and hashes['boot'][0] <= PLACE['boot_a'][1]:
+        if hashes.get('boot', (0, 'none'))[1] == 'sha256' and hashes['boot'][0] <= boot[1]:
             size, _, salt, digest = hashes['boot']
             h = hashlib.sha256(salt)
             for at in range(0, size, PIECE):
-                h.update(self.dev.read('user', PLACE['boot_a'][0] + at, min(PIECE, size - at)))
+                h.update(self.dev.read('user', boot[0] + at, min(PIECE, size - at)))
             root = h.digest() != digest
         style = props.get('com.haretic.style')
         if style is None:
@@ -383,7 +387,16 @@ class Session:
         ops += [('Android (super)', 'super', 'sparse', None),
                 ('vbmeta', 'vbmeta_a', pkg.read('vbmeta'), None),
                 ('the haretic bootloader (LK)', 'lk_a', ('lk', pkg.read('lk')), None),
-                ('the boot logo', 'logo', pkg.read('logo'), 'image'),
+                ('the boot logo', 'logo', pkg.read('logo'), 'image')]
+        # Slot B made ready too: an update over the air installs to the other slot and boots it,
+        # which needs the same firmware, the haretic LK and the stock DTBO there, and no
+        # vendor_boot or init_boot for LK to take instead of boot
+        for name in r1.SLOT_FIRMWARE:
+            ops.append((f'{name} (slot B, as slot A)', name + '_b', ('copy', name + '_a'), None))
+        ops += [('the haretic bootloader (LK, slot B)', 'lk_b', ('lk', pkg.read('lk')), None),
+                ('dtbo (slot B)', 'dtbo_b', pkg.read('dtbo'), None),
+                ('vendor_boot (slot B)', 'vendor_boot_b', z, None),
+                ('init_boot (slot B)', 'init_boot_b', z, None),
                 ('the kernel (boot)', 'boot_a', pkg.read('boot'), None),
                 ('the boot record (slot A)', 'para', 'record', None)]
         return ops
@@ -391,7 +404,7 @@ class Session:
     def install(self, pkg, mode, allow_downgrade=False):
         if mode not in ('clean', 'update'):
             raise ValueError(mode)
-        if mode == 'update' and (self.info.slot != 'a' or self.info.lk['a'] != 'haretic'):
+        if mode == 'update' and self.info.lk[self.info.slot] != 'haretic':
             raise StepError('This r1 does not run haretic, so it needs a clean install.')
         if mode == 'update':
             for kind, text in update_problems(self.info.installed, pkg):
@@ -421,7 +434,8 @@ class Session:
                 rec = self.dev.read('user', offset + r1.RECORD_OFFSET, 32)
                 self.write(offset + r1.RECORD_OFFSET, r1.activate_a(rec), label)
             elif isinstance(src, tuple) and src[0] == 'copy':
-                for i, data in enumerate(self.read('user', PLACE[src[1]][0], size)):
+                # tee_a is 5 MiB and tee_b 8 MiB: no more than the source holds
+                for i, data in enumerate(self.read('user', PLACE[src[1]][0], min(size, PLACE[src[1]][1]))):
                     self.total += len(data)  # the read is extra work over the plan
                     self.write(offset + i * PIECE, data, label)
             elif isinstance(src, tuple) and src[0] == 'lk':

@@ -124,6 +124,14 @@ class Flow(unittest.TestCase):
         rec = dev.read('user', PLACE['para'][0] + r1.RECORD_OFFSET, 32)
         self.assertTrue(r1.record_valid(rec))
         self.assertEqual(r1.record_slot(rec), 'a')
+        # slot B ready for an update over the air: slot A's firmware, the haretic LK and DTBO
+        self.assertEqual(self.part(dev, 'lk_b', r1.LK_PAYLOAD), LK)
+        self.assertEqual(self.part(dev, 'dtbo_b', len(self.files['dtbo'])), self.files['dtbo'])
+        for name in ('vendor_boot_b', 'init_boot_b'):
+            self.assertEqual(self.part(dev, name), bytes(PLACE[name][1]), name)
+        for name in r1.SLOT_FIRMWARE:
+            n = min(PLACE[name + '_a'][1], PLACE[name + '_b'][1])
+            self.assertEqual(self.part(dev, name + '_b', n), self.part(dev, name + '_a', n), name)
         for name in r1.NEVER_WRITTEN[:6]:
             self.assertEqual(self.part(dev, name), before[name], name)
         for area in ('boot1', 'boot2'):
@@ -203,13 +211,13 @@ class Flow(unittest.TestCase):
         root = os.path.join(self.dir, 'backups')
         self.assertEqual([f for f, _ in backups(root, s2.info.identity['cid'], 'rabbitOS')], [stock])
 
-    def haretic_r1(self, boot, **props):
-        """A simulated r1 already running haretic on slot A, its vbmeta made with props."""
-        dev = SimDevice(os.path.join(self.dir, 'r1'))
+    def haretic_r1(self, boot, slot='a', **props):
+        """A simulated r1 already running haretic on slot, its vbmeta made with props."""
+        dev = SimDevice(os.path.join(self.dir, 'r1'), slot=slot)
         s = Session(dev, Log())
         identity = s.connect(lambda st: None)
-        for name, data in (('lk_a', LK), ('boot_a', boot), ('vbmeta_a', vbmeta(self.files['boot'], **props))):
-            dev.write(PLACE[name][0], data)
+        for name, data in (('lk_', LK), ('boot_', boot), ('vbmeta_', vbmeta(self.files['boot'], **props))):
+            dev.write(PLACE[name + slot][0], data)
         s.inspect(identity)
         s.info.lock = 'unlocked'
         return s, dev
@@ -243,6 +251,20 @@ class Flow(unittest.TestCase):
         kinds = [k for k, _ in flow.update_problems(s.info.installed, self.pkg)]
         self.assertEqual(kinds, ['warn', 'warn'])
         s.install(self.pkg, 'update')
+
+    def test_update_from_slot_b(self):
+        """After an update over the air the r1 runs slot B: an update reads that build and moves
+        the r1 back to slot A."""
+        s, dev = self.haretic_r1(self.files['boot'], slot='b', version='haretic-20261201-nightly')
+        self.assertEqual(s.info.slot, 'b')
+        self.assertEqual(s.info.installed['version'], 'haretic-20261201-nightly')
+        self.assertFalse(s.info.installed['root'])
+        with self.assertRaises(StepError):
+            s.install(self.pkg, 'update')
+        s.install(self.pkg, 'update', allow_downgrade=True)
+        self.assertEqual(self.part(dev, 'boot_a'), self.files['boot'])
+        rec = dev.read('user', PLACE['para'][0] + r1.RECORD_OFFSET, 32)
+        self.assertEqual(r1.record_slot(rec), 'a')
 
     def test_update_refused_on_stock(self):
         s, dev = self.session()
