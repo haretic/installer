@@ -84,9 +84,16 @@ def main(argv=None):
     rep = Terminal(args.verbose)
     pkg = None
     if args.cmd == 'install':
-        pkg = package.Package(args.package, paths.downloads())
-        rep.status(f'Unpacking and checking {os.path.basename(args.package)}')
-        pkg.verify(rep.progress)
+        try:
+            pkg = package.Package(args.package, paths.downloads())
+            rep.status(f'Unpacking and checking {os.path.basename(args.package)}')
+            pkg.verify(rep.progress)
+        except package.PackageError as e:
+            print(f'\nStopped: {e} Nothing was changed.', file=sys.stderr)
+            return 2
+        except (Cancelled, KeyboardInterrupt):
+            print('\nStopped.', file=sys.stderr)
+            return 130
     dev = MtkDevice(paths.work(), log=rep.log)
     s = flow.Session(dev, rep)
     try:

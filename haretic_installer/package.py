@@ -56,6 +56,8 @@ def _manifest(path):
             if first is None or first.name != 'manifest.json' or not first.isfile():
                 raise PackageError('This is not a haretic install package (no manifest first).')
             return json.load(t.extractfile(first))
+    except FileNotFoundError:
+        raise PackageError(f'There is no file at {path}.')
     except (OSError, tarfile.TarError, EOFError, ValueError) as e:
         raise PackageError(f'This is not a haretic install package ({e}).')
 

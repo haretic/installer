@@ -342,6 +342,22 @@ class Flow(unittest.TestCase):
             self.assertEqual(cli.main(args + ['--allow-downgrade']), 0)
         self.assertEqual(self.part(dev, 'boot_a'), self.files['boot'])
 
+    def test_cli_bad_package(self):
+        """The terminal stops on a damaged or missing package with its message, before any r1 is opened."""
+        import io
+        from unittest import mock
+        from haretic_installer import cli
+        bad = os.path.join(self.dir, 'haretic-20261106-1808-nightly-r1_bvS.tar.xz')
+        with open(bad, 'wb') as f:
+            f.write(lzma.compress(b'x'))
+        for path in (bad, os.path.join(self.dir, 'missing-r1_bvN.tar.xz')):
+            err = io.StringIO()
+            with mock.patch.object(cli, 'MtkDevice', side_effect=AssertionError('r1 opened')), \
+                    mock.patch.object(cli.paths, 'downloads', lambda: self.dir), \
+                    mock.patch('sys.stdout'), mock.patch('sys.stderr', err):
+                self.assertEqual(cli.main(['install', path, '--yes']), 2, path)
+            self.assertIn('Stopped: ', err.getvalue(), path)
+
     def test_update_refused_on_stock(self):
         s, dev = self.session()
         s.info.lock = 'unlocked'
