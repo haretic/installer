@@ -155,6 +155,7 @@ class Flow(unittest.TestCase):
         self.assertTrue(s.unlock())
         self.assertEqual(r1.lock_state(self.part(dev, 'seccfg', 64)), 'unlocked')
         s.install(self.pkg, 'clean')
+        self.assertEqual(s.done, s.total)  # the plan counts every byte moved, tee_b's 8 MiB too
         self.install_checks(s, dev, before)
         if slot == 'b':
             for name in r1.SLOT_FIRMWARE:

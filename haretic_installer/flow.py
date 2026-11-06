@@ -419,6 +419,9 @@ class Session:
         total = 0
         for _label, part, src, length in ops:
             size = self.info.parts[part][1]
+            if isinstance(src, tuple) and src[0] == 'copy':
+                total += 3 * min(size, PLACE[src[1]][1])  # read, written, read back
+                continue
             total += 2 * (super_bytes if src == 'sparse' else 32 if src == 'record' else
                           len(src) if length == 'image' else length or size)
         self.begin(total, 'Installing')
@@ -436,7 +439,6 @@ class Session:
             elif isinstance(src, tuple) and src[0] == 'copy':
                 # tee_a is 5 MiB and tee_b 8 MiB: no more than the source holds
                 for i, data in enumerate(self.read('user', PLACE[src[1]][0], min(size, PLACE[src[1]][1]))):
-                    self.total += len(data)  # the read is extra work over the plan
                     self.write(offset + i * PIECE, data, label)
             elif isinstance(src, tuple) and src[0] == 'lk':
                 old = self.dev.read('user', offset, size)
