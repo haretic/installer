@@ -1115,6 +1115,11 @@ class Window(QWidget):
             f'<tr><td style="color:#9a9a9a;padding-right:18px">{k}</td><td>{v}</td></tr>' for k, v in rows)
             + '</table>')
         self.problems = flow.update_problems(info.installed, self.pkg) if haretic and self.pkg else []
+        if haretic and info.lock != 'unlocked':
+            # The update has no unlock step to go back to; the clean install unlocks first
+            self.problems.append(('refuse', 'The bootloader of this r1 is locked. Installing needs it unlocked, '
+                                            'and unlocking under existing data may leave that data unreadable, '
+                                            'so this takes a clean install.'))
         self.why_clicks = 0
         blocked = self.update_blocked()
         p.choice.setVisible(haretic)
