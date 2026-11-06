@@ -203,6 +203,21 @@ class Flow(unittest.TestCase):
             s2.restore(path)
         self.assertEqual(self.part(dev, 'boot_a'), boot)
 
+    def test_restore_refuses_a_misplaced_part(self):
+        s, dev = self.session()
+        s.check_archive = lambda path, text: None  # only the place is under test
+        o, n = PLACE['logo']
+        for place in ((o + 4096, n), (o, n + 4096)):
+            parts = {'logo': {'area': 'user', 'offset': place[0], 'size': place[1], 'file': 'logo.img'}}
+            m = {'kind': 'r1-backup', 'complete': True, 'device': {'cid': s.info.identity['cid']}, 'parts': parts}
+            m['order'] = flow.restore_order(m)
+            real, flow.archive_manifest = flow.archive_manifest, lambda path: m
+            try:
+                with self.assertRaises(StepError):
+                    s.restore('unused')
+            finally:
+                flow.archive_manifest = real
+
     def test_haretic_backup_is_its_own(self):
         s, dev, stock, _ = self.run_clean('a')
         s2 = Session(dev, Log())

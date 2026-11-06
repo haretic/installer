@@ -471,9 +471,8 @@ class Session:
             raise StepError('This restore file was not made by this installer.')
         for name in order:
             p = manifest['parts'][name]
-            if PLACE.get(name, (p['offset'], p['size'])) != (p['offset'], p['size']) \
-                    and name not in self.info.parts:
-                raise StepError(f'The backup of {name} does not fit this r1.')
+            if self.info.parts.get(name) != (p['offset'], p['size']):
+                raise StepError(f'The backup of {name} does not fit this r1. Nothing was changed.')
         self.check_archive(path, 'Checking the restore file')
         self.begin(sum(2 * manifest['parts'][n]['size'] for n in order), 'Restoring')
         files = {manifest['parts'][n]['file']: n for n in order}
