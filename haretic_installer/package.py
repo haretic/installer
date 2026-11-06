@@ -1,6 +1,7 @@
 """haretic install packages: an xz-compressed tar of the images an r1 needs, its manifest of their
 hashes first. Read from a file or downloaded from haretic's GitHub releases, then unpacked once
 (and checked on the way) next to the download."""
+import contextlib
 import hashlib
 import io
 import json
@@ -202,12 +203,13 @@ def download(release, folder, progress=None, cancelled=lambda: False):
     req = urllib.request.Request(release['url'], headers={'User-Agent': 'haretic-installer'})
     if have:
         req.add_header('Range', f'bytes={have}-')
-    with urllib.request.urlopen(req, timeout=60) as r:
-        if have and r.status != 206:
+    # A whole .part, stopped before its check: asking for the bytes after its end gets a 416
+    with contextlib.nullcontext() if have == release['size'] else urllib.request.urlopen(req, timeout=60) as r:
+        if r and have and r.status != 206:
             have = 0  # the server ignored the range: start again
         with open(part, 'ab' if have else 'wb') as out:
             done = have
-            while chunk := r.read(1 << 20):
+            while r and (chunk := r.read(1 << 20)):
                 if cancelled():
                     return None
                 out.write(chunk)

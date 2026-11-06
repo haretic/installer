@@ -396,6 +396,18 @@ class Names(unittest.TestCase):
                     'haretic-20261106-130-nightly-r1_bvN.tar.xz', 'haretic-20261106-0130-Nightly-r1_bvN.tar.xz'):
             self.assertIsNone(package.NAME.match(bad), bad)
 
+    def test_whole_part_is_not_fetched_again(self):
+        """A download stopped between its last byte and its check: no request, which would get a 416."""
+        import hashlib
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
+            data = os.urandom(4096)
+            name = 'haretic-20261106-0130-nightly-r1_bvN.tar.xz'
+            open(os.path.join(d, name + '.part'), 'wb').write(data)
+            rel = {'name': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
+                   'url': 'http://127.0.0.1:9/unreachable'}
+            self.assertEqual(package.download(rel, d), os.path.join(d, name))
+            self.assertEqual(open(os.path.join(d, name), 'rb').read(), data)
+
 
 if __name__ == '__main__':
     unittest.main()
