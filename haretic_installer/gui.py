@@ -11,7 +11,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QRadioButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+                               QRadioButton, QScrollArea, QStackedWidget, QStyle, QStyleOptionButton,
+                               QVBoxLayout, QWidget)
 
 from . import drivers, flow, package, paths, r1
 from .device import Cancelled, DeviceError, MtkDevice, SimDevice
@@ -37,13 +38,16 @@ QFrame#side {{ background: #101010; border-right: 1px solid #242424; }}
 QFrame#side QLabel {{ background: transparent; }}
 QPushButton {{ background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; padding: 9px 18px; }}
 QPushButton:hover {{ background: #303030; }}
+QPushButton:focus {{ border-color: {ORANGE}; }}
 QPushButton:disabled {{ color: #666; border-color: #2a2a2a; }}
-QPushButton#primary {{ background: {ORANGE}; color: #141414; border: none; font-weight: 600; }}
-QPushButton#primary:hover {{ background: #f27c4d; }}
-QPushButton#primary:disabled {{ background: #5a3a2c; color: #2a2a2a; }}
-QPushButton#danger {{ background: #b3402a; color: #ffffff; border: none; font-weight: 600; }}
+QPushButton#primary {{ background: {ORANGE}; color: #141414; border: 1px solid {ORANGE}; font-weight: 600; }}
+QPushButton#primary:hover {{ background: #f27c4d; border-color: #f27c4d; }}
+QPushButton#primary:focus, QPushButton#danger:focus {{ border-color: #ffffff; }}
+QPushButton#primary:disabled {{ background: #4a2f24; border-color: #4a2f24; color: #a08578; }}
+QPushButton#danger {{ background: #b3402a; color: #ffffff; border: 1px solid #b3402a; font-weight: 600; }}
+QPushButton#danger:hover {{ background: #c44a33; border-color: #c44a33; }}
 QPushButton#link {{ background: transparent; border: none; color: {ORANGE}; padding: 4px 0; text-align: left; }}
-QPushButton#link:hover {{ text-decoration: underline; }}
+QPushButton#link:hover, QPushButton#link:focus {{ text-decoration: underline; }}
 QProgressBar {{ background: #262626; border: none; border-radius: 6px; height: 12px; text-align: center; color: transparent; }}
 QProgressBar::chunk {{ background: {ORANGE}; border-radius: 6px; }}
 QPlainTextEdit {{ background: #0c0c0c; border: 1px solid #262626; border-radius: 8px; font-family: monospace; font-size: 12px; color: #b8b8b8; }}
@@ -51,12 +55,23 @@ QRadioButton, QCheckBox {{ spacing: 10px; padding: 4px 0; }}
 QRadioButton::indicator, QCheckBox::indicator {{ width: 14px; height: 14px; border: 2px solid #6a6a6a; background: #141414; }}
 QRadioButton::indicator {{ border-radius: 9px; }}
 QCheckBox::indicator {{ border-radius: 4px; }}
-QRadioButton::indicator:hover, QCheckBox::indicator:hover {{ border-color: {ORANGE}; }}
+QRadioButton::indicator:hover, QCheckBox::indicator:hover, QRadioButton::indicator:focus,
+QCheckBox::indicator:focus {{ border-color: {ORANGE}; }}
 QRadioButton::indicator:checked {{ border-color: {ORANGE}; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {ORANGE}, stop:0.45 {ORANGE}, stop:0.55 #141414, stop:1 #141414); }}
 QCheckBox::indicator:checked {{ border-color: {ORANGE}; background: {ORANGE}; }}
 QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{ border-color: #333; }}
 QRadioButton:disabled, QCheckBox:disabled {{ color: #666; }}
 QLabel#qt_msgbox_informativelabel {{ min-width: 420px; }}
+QScrollBar {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ width: 10px; }}
+QScrollBar:horizontal {{ height: 10px; }}
+QScrollBar::handle {{ background: #3a3a3a; border-radius: 3px; margin: 2px; }}
+QScrollBar::handle:vertical {{ min-height: 32px; }}
+QScrollBar::handle:horizontal {{ min-width: 32px; }}
+QScrollBar::handle:hover {{ background: #555555; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+QToolTip {{ background: #262626; color: #e8e8e8; border: 1px solid #3a3a3a; padding: 6px; }}
 '''
 
 
@@ -179,15 +194,25 @@ class Stepper(QWidget):
         self.current = 0
         self.failed = False
         self.setMinimumWidth(170)
+        self.setAccessibleName('Steps')
+        self.describe()
 
     def set_steps(self, steps):
         self.steps = list(steps)
         self.current = 0
+        self.describe()
         self.update()
 
     def set(self, index, failed=False):
         self.current, self.failed = index, failed
+        self.describe()
         self.update()
+
+    def describe(self):
+        n = len(self.steps)
+        self.setAccessibleDescription(
+            'Not started' if self.current < 0 else 'All steps done' if self.current >= n else
+            f'Step {self.current + 1} of {n}: {self.steps[self.current]}' + (', stopped' if self.failed else ''))
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -199,7 +224,7 @@ class Stepper(QWidget):
         for i, name in enumerate(self.steps):
             y = y0 + i * gap
             if i < len(self.steps) - 1:
-                p.setPen(QPen(QColor(ORANGE if i < self.current else '#333'), 2))
+                p.setPen(QPen(QColor(ORANGE if i < self.current else '#3a3a3a'), 2))
                 p.drawLine(QPointF(30, y + 12), QPointF(30, y + gap - 12))
             c = QPointF(30, y)
             if i < self.current:
@@ -217,10 +242,10 @@ class Stepper(QWidget):
                 p.setBrush(QColor(colour))
                 p.drawEllipse(c, 4.5, 4.5)
             else:
-                p.setPen(QPen(QColor('#3a3a3a'), 2))
+                p.setPen(QPen(QColor('#4a4a4a'), 2))
                 p.setBrush(Qt.NoBrush)
                 p.drawEllipse(c, 10, 10)
-            p.setPen(QColor('#ffffff' if i == self.current else '#bdbdbd' if i < self.current else '#6c6c6c'))
+            p.setPen(QColor('#ffffff' if i == self.current else '#bdbdbd' if i < self.current else '#8a8a8a'))
             f.setBold(i == self.current)
             p.setFont(f)
             p.drawText(QRectF(52, y - 12, 200, 24), Qt.AlignVCenter, name)
@@ -244,6 +269,24 @@ def bullets(items):
         f'<tr><td valign="top" style="padding-right:6px"><span style="color:{ORANGE};font-weight:600">-</span></td>'
         f'<td>{t}</td></tr>'
         for t in items) + '</table>'
+
+
+class Check(QCheckBox):
+    """A checkbox with a drawn tick, not only an orange fill."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.isChecked():
+            return
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        r = QRectF(self.style().subElementRect(QStyle.SE_CheckBoxIndicator, opt, self))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor('#141414'), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        x, y, w, h = r.x(), r.y(), r.width(), r.height()
+        p.drawPolyline([QPointF(x + w * .26, y + h * .52), QPointF(x + w * .44, y + h * .70),
+                        QPointF(x + w * .76, y + h * .32)])
 
 
 def frame(name):
@@ -309,6 +352,7 @@ class Progress(QWidget):
         self.bar = QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setTextVisible(False)
+        self.bar.setAccessibleName('Progress')
         self.detail = label('', 'small')
         lay.addWidget(self.status)
         lay.addWidget(self.bar)
@@ -446,12 +490,13 @@ class Window(QWidget):
         self.pages = QStackedWidget()
         right.addWidget(self.pages, 1)
         self.log_view = QPlainTextEdit(readOnly=True)
+        self.log_view.setAccessibleName('Installer log')
         self.log_view.setMaximumBlockCount(5000)
         self.log_view.setFixedHeight(170)
         self.log_view.hide()
         lw = QWidget()
         ll = QVBoxLayout(lw)
-        ll.setContentsMargins(24, 0, 24, 16)
+        ll.setContentsMargins(36, 0, 36, 16)
         ll.addWidget(self.log_view)
         right.addWidget(lw)
         root.addLayout(right, 1)
@@ -500,6 +545,10 @@ class Window(QWidget):
         self.pages.setCurrentWidget(page)
         if step is not None:
             self.stepper.set(step)
+        main = [b for b in page.findChildren(QPushButton)
+                if b.objectName() == 'primary' and b.isVisibleTo(page) and b.isEnabled()]
+        if main:
+            main[-1].setFocus()
 
     def failed(self, e, page=None, head='This step stopped'):
         """Show an exception on the current page's error card."""
@@ -672,8 +721,8 @@ class Window(QWidget):
         sl.addWidget(p.online)
         opts = QHBoxLayout()
         opts.setContentsMargins(28, 0, 0, 4)
-        p.gapps = QCheckBox('Google apps (Play Store and Google services)')
-        p.root = QCheckBox('Root (Magisk)')
+        p.gapps = Check('Google apps (Play Store and Google services)')
+        p.root = Check('Root (Magisk)')
         for c in (p.gapps, p.root):
             c.setEnabled(False)
             opts.addWidget(c)
@@ -1015,7 +1064,7 @@ class Window(QWidget):
         p.change = button('Change folder...')
         row.addWidget(p.change)
         lay.addLayout(row)
-        p.userdata = QCheckBox('Also back up personal data (userdata) - about 116 GB more, and slow')
+        p.userdata = Check('Also back up personal data (userdata) - about 116 GB more, and slow')
         lay.addWidget(p.userdata)
         p.body.addWidget(card)
         p.stock, sl = frame('warn')
