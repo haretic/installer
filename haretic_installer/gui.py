@@ -19,7 +19,7 @@ from .device import Cancelled, DeviceError, MtkDevice, SimDevice
 
 ORANGE = '#EC6A37'
 STEPS = ('Download', 'Connect', 'Check', 'Back up', 'Unlock', 'Install', 'Start')
-RESTORE_STEPS = ('Backup', 'Connect', 'Check', 'Restore', 'Start')
+RESTORE_STEPS = ('Restore file', 'Connect', 'Check', 'Restore', 'Start')
 
 STYLE = f'''
 QWidget {{ background: #141414; color: #e8e8e8; font-size: 14px; }}
@@ -932,6 +932,10 @@ class Window(QWidget):
             session = flow.Session(self.device, job)
             identity = session.connect(lambda s: job.status(texts.get(s, s)))
             if self.cid and identity['cid'] != self.cid:
+                if self.restore_file:
+                    raise flow.StepError('This r1 is not the one the restore file was made from.',
+                                         hint='Connect the r1 the restore file came from, or choose its own '
+                                         'restore file.')
                 raise flow.StepError('This is a different r1 from the one the installer started with.',
                                      hint='Connect the first r1 to finish its install.')
             job.status('Reading the r1...')
@@ -1400,10 +1404,17 @@ class Window(QWidget):
                  'came from. Everything the installer changed returns to how it was; haretic and its '
                  'data are erased. The whole file is checked before anything is written.')
         card, lay = frame('card')
-        p.chosen = label('No restore file chosen.', 'small')
+        lay.addWidget(label('<b>Restore file</b>'))
+        p.chosen = label('')
         lay.addWidget(p.chosen)
+        p.path = label('', 'small')
+        p.path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(p.path)
+        row = QHBoxLayout()
         p.pick = button('Choose a restore file...')
-        lay.addWidget(p.pick)
+        row.addWidget(p.pick)
+        row.addStretch(1)
+        lay.addLayout(row)
         p.body.addWidget(card)
         p.progress = Progress()
         p.progress.hide()
@@ -1414,10 +1425,17 @@ class Window(QWidget):
         p.buttons.addWidget(p.back)
         p.buttons.addWidget(p.go)
         p.stopped = 'Restoring stopped'
+        p.on_error = lambda: (p.back.setEnabled(True), p.pick.setEnabled(True))
         p.pick.clicked.connect(self.pick_backup)
         p.back.clicked.connect(self.show_welcome)
-        p.go.clicked.connect(lambda: self.start_connect(after=self.show_check))
+        p.go.clicked.connect(self.restore_continue)
         return p
+
+    def restore_continue(self):
+        """Connect the r1, or, when it still is from a question put off, ask again."""
+        if self.device and self.session and self.session.info.identity['cid'] == self.cid:
+            return self.show_restore_confirm()
+        self.start_connect(after=self.show_check)
 
     def show_restore(self):
         self.stepper.set_steps(RESTORE_STEPS)
@@ -1425,6 +1443,10 @@ class Window(QWidget):
         found = flow.backups(paths.backups(), system='rabbitOS') or flow.backups(paths.backups())
         if found and not self.restore_file:
             self.set_restore(found[0][0], found[0][1])
+        elif not self.restore_file:
+            p.chosen.setText('No restore file found in the installer\'s backups folder.')
+            p.path.setText('A restore file is named like r1-rabbitOS-restore-<i>date</i>.tar.xz. If you '
+                           'copied it elsewhere, choose it.')
         self.show_page(p, 0)
 
     def pick_backup(self):
@@ -1443,8 +1465,11 @@ class Window(QWidget):
         self.restore_file = path
         self.cid = m['device']['cid']
         what = self.restore_system = 'haretic' if m['device']['system'] == 'haretic' else 'rabbitOS'
-        p.chosen.setText(f'{path}<br>{what}, made {m["created"].replace("T", " ")[:16]}, r1 storage ID '
-                         f'{self.cid[:8]}...')
+        p.title.setText(f'Put {what} back')
+        p.chosen.setText(f'{what}, backed up {m["created"].replace("T", " ")[:16]} from the r1 with storage '
+                         f'ID {self.cid[:8]}...')
+        p.path.setText(path)
+        p.pick.setText('Choose another restore file...')
         p.go.setEnabled(True)
 
     def show_restore_confirm(self):
@@ -1464,6 +1489,8 @@ class Window(QWidget):
         p.progress.show()
         p.progress.reset('Restoring')
         p.go.setEnabled(False)
+        p.back.setEnabled(False)
+        p.pick.setEnabled(False)
         self.step_safe = False
         self.resume = self.start_restore
         self.run(lambda job: self.with_reporter(job, self.session.restore, self.restore_file),
