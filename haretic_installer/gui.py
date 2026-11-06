@@ -20,7 +20,7 @@ from . import drivers, flow, package, paths, r1
 from .device import Cancelled, DeviceError, MtkDevice, SimDevice
 
 ORANGE = '#EC6A37'
-ISSUES = 'https://github.com/haretic/installer/issues'
+ISSUES = 'https://github.com/haretic/release/issues'
 STEPS = ('Download', 'Connect', 'Check', 'Back up', 'Unlock', 'Install', 'Start')
 RESTORE_STEPS = ('Restore file', 'Connect', 'Check', 'Restore', 'Start')
 

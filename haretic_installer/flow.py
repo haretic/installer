@@ -143,7 +143,7 @@ class Session:
             if offset < hi and end > lo:
                 raise StepError(f'The installer refused to write {label} over a protected area of the '
                                 'r1. Nothing there was changed.', safe=False,
-                                hint='Please save the log and report it at https://github.com/haretic/installer/issues.')
+                                hint='Please save the log and report it at https://github.com/haretic/release/issues.')
         at = 0
         while at < len(data):
             self.check()
