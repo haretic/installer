@@ -1087,6 +1087,7 @@ class Window(QWidget):
         lay.addLayout(row)
         p.userdata = Check('Also back up personal data (userdata) - about 116 GB more, and slow')
         lay.addWidget(p.userdata)
+        p.options = card
         p.body.addWidget(card)
         p.stock, sl = frame('warn')
         p.stock_text = label('')
@@ -1104,9 +1105,10 @@ class Window(QWidget):
         p.change.clicked.connect(self.change_backup_folder)
         p.go.clicked.connect(self.start_backup)
         p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
-        p.on_error = lambda: (p.cancel.hide(), p.go.setEnabled(True))
+        p.on_error = lambda: (p.cancel.hide(), p.go.setEnabled(True), p.options.setEnabled(True))
         p.stopped = 'The backup stopped'
         p.group.buttonToggled.connect(lambda *_: self.backup_button())
+        p.userdata.toggled.connect(lambda _: self.backup_room())
         return p
 
     def show_backup(self):
@@ -1115,6 +1117,7 @@ class Window(QWidget):
         p.progress.hide()
         p.go.setEnabled(True)
         p.cancel.hide()
+        p.options.setEnabled(True)
         self.backup_choices()
         self.show_page(p, 3)
 
@@ -1127,14 +1130,16 @@ class Window(QWidget):
         p.found = stock[0][0] if stock and not haretic else None
         p.skip.setVisible(haretic)
         p.existing.setVisible(bool(p.found))
+        p.fresh.setVisible(haretic or bool(p.found))  # no lone choice
         p.fresh.setText('Back up haretic as it is now' if haretic else 'Make a new backup')
         if haretic:
             p.lead.setText('This r1 already runs haretic, so nothing needs backing up. A backup of '
                            'haretic as it is now is optional.')
             p.skip.setChecked(True)
             if stock:
-                p.stock_text.setText(f'Your rabbitOS restore file is {stock[0][0]}. Keep a copy '
-                                     'somewhere safe: it is the only way to put rabbitOS back.')
+                p.stock_text.setText(f'Your rabbitOS restore file is <b>{os.path.basename(stock[0][0])}</b>, in '
+                                     f'{os.path.dirname(stock[0][0])}. Keep a copy somewhere safe: it is the '
+                                     'only way to put rabbitOS back.')
             else:
                 p.stock_text.setText(f'There is no rabbitOS restore file of this r1 in {p.root}. '
                                      'Without it, the r1 cannot go back to rabbitOS. If you saved it '
@@ -1150,14 +1155,26 @@ class Window(QWidget):
             else:
                 p.fresh.setChecked(True)
         p.stock.setVisible(haretic)
-        free = flow.shutil.disk_usage(p.root).free
-        p.folder.setText(f'Saved in {p.root} - {size(free)} free')
         self.backup_button()
 
     def backup_button(self):
         p = self.p_backup
         p.go.setText('Back up' if p.fresh.isChecked() else 'Continue')
         p.userdata.setEnabled(p.fresh.isChecked())
+        self.backup_room()
+
+    def backup_room(self):
+        """The folder and its free space, flagged when it is less than the backup's own check asks."""
+        p = self.p_backup
+        if self.session is None:
+            return
+        free = flow.shutil.disk_usage(p.root).free
+        need = min(sum(n for *_, n in self.session.backup_plan(p.userdata.isChecked())) // 2, flow.BACKUP_FREE)
+        if p.fresh.isChecked() and free < need:
+            p.folder.setText(f'Saved in {p.root} - <span style="color:#ff9e7a">only {size(free)} free; the '
+                             f'backup needs about {size(need)}. Choose another folder or free up space.</span>')
+        else:
+            p.folder.setText(f'Saved in {p.root} - {size(free)} free')
 
     def change_backup_folder(self):
         p = self.p_backup
@@ -1178,6 +1195,7 @@ class Window(QWidget):
             self.log(f'using restore file {p.found}')
             return self.confirm_writes()
         p.go.setEnabled(False)
+        p.options.setEnabled(False)
         p.cancel.show()
         p.progress.show()
         p.progress.reset('Starting the backup')
@@ -1187,6 +1205,10 @@ class Window(QWidget):
         def ok(path):
             p.cancel.hide()
             p.progress.status.setText(f'Saved {path}')
+            # The new file is now a choice; Continue goes on from here if the next question is put off
+            p.options.setEnabled(True)
+            p.go.setEnabled(True)
+            self.backup_choices()
             if self.session.info.system == 'haretic':
                 self.backup_file = None
                 self.confirm_writes()
