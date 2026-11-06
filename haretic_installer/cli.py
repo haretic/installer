@@ -136,7 +136,7 @@ def main(argv=None):
             return 0
         s.boot()
         print('\nDone. The r1 is starting' + ('; the first start takes a few minutes.'
-                                               if args.cmd == 'install' else '.'))
+                                              if args.cmd == 'install' else '.'))
         return 0
     except (flow.StepError, DeviceError, r1.NotAnR1, package.PackageError) as e:
         print(f'\nStopped: {e}', file=sys.stderr)

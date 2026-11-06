@@ -35,6 +35,8 @@ def file_name(version, gapps, root, aosp=False):
 def describe(gapps, root, aosp=False):
     return (('plain LineageOS (aosp), ' if aosp else '') + ('with Google apps' if gapps else 'without Google apps')
             + (', rooted (Magisk)' if root else ''))
+
+
 # What a package holds, in its order: (key, file, the most its partition takes). super is a
 # sparse image and comes last, the biggest.
 IMAGES = (('lk', 'lk.bin', r1.LK_PAYLOAD), ('logo', 'logo.bin', 0xb00000), ('dtbo', 'dtbo.img', 0x800000),
