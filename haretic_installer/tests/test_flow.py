@@ -312,6 +312,22 @@ class Flow(unittest.TestCase):
         rec = dev.read('user', PLACE['para'][0] + r1.RECORD_OFFSET, 32)
         self.assertEqual(r1.record_slot(rec), 'a')
 
+    def test_cli_downgrade(self):
+        """The terminal's update refuses an older build, and --allow-downgrade lets it through."""
+        from unittest import mock
+        from haretic_installer import cli
+        s, dev = self.haretic_r1(self.files['boot'], version='haretic-20261201-0900-nightly')
+        args = ['install', self.pkg.path, '--update', '--yes', '--backups', os.path.join(self.dir, 'backups')]
+        before = dev.read('user', PLACE['super'][0], 1 << 20)
+        with mock.patch.object(cli, 'MtkDevice', lambda *a, **k: dev), \
+                mock.patch.object(cli.paths, 'work', lambda: self.dir), \
+                mock.patch.object(cli.paths, 'downloads', lambda: os.path.dirname(self.pkg.path)), \
+                mock.patch('sys.stdout'), mock.patch('sys.stderr'):
+            self.assertEqual(cli.main(args), 2)
+            self.assertEqual(dev.read('user', PLACE['super'][0], 1 << 20), before)
+            self.assertEqual(cli.main(args + ['--allow-downgrade']), 0)
+        self.assertEqual(self.part(dev, 'boot_a'), self.files['boot'])
+
     def test_update_refused_on_stock(self):
         s, dev = self.session()
         s.info.lock = 'unlocked'

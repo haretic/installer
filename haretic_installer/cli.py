@@ -107,7 +107,10 @@ def main(argv=None):
             s.restore(args.file)
         elif args.cmd == 'install':
             mode = 'update' if args.update else 'clean'
-            if mode == 'update' and info.system == 'haretic':
+            if mode == 'update' and info.system != 'haretic':
+                raise flow.StepError('This r1 does not run haretic, so it needs a clean install. Nothing '
+                                     'was changed.', hint='Run install again without --update.')
+            if mode == 'update':
                 problems = flow.update_problems(info.installed, pkg)
                 for kind, text in problems:
                     if kind == 'refuse' or kind == 'downgrade' and not args.allow_downgrade:
@@ -127,7 +130,7 @@ def main(argv=None):
             if mode == 'clean' and not confirm('Everything on the r1 is erased.', args.yes):
                 return 1
             s.unlock()
-            s.install(pkg, mode)
+            s.install(pkg, mode, args.allow_downgrade)
         if getattr(args, 'no_boot', False):
             print('\nDone; the r1 stays in download mode.')
             return 0
