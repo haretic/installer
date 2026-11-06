@@ -69,7 +69,8 @@ def minutes(seconds):
         return ''
     if seconds < 60:
         return 'less than a minute left'
-    return f'about {round(seconds / 60)} min left'
+    m = round(seconds / 60)
+    return f'about {m} min left' if m < 60 else f'about {m // 60} h {m % 60:02d} min left'
 
 
 # -- background work
@@ -317,21 +318,34 @@ class Progress(QWidget):
 
     def reset(self, text=''):
         self.status.setText(text)
+        self.bar.setRange(0, 1000)
         self.bar.setValue(0)
         self.detail.setText('')
         self.rate = flow.Rate()
 
+    def busy(self, text=None):
+        """A moving bar for work that has no measure, such as a password prompt."""
+        if text is not None:
+            self.status.setText(text)
+        self.bar.setRange(0, 0)
+        self.detail.setText('')
+
     def set(self, done, total):
+        if total <= 1 and done < total:
+            return self.busy()  # one piece of work: nothing to count
+        self.bar.setRange(0, 1000)
         self.bar.setValue(int(1000 * done / total) if total else 0)
+        if self.rate.marks and done < self.rate.marks[-1][1]:
+            self.rate = flow.Rate()  # the next phase starts from 0: its own speed
         self.rate.add(done)
         if not self.unit_bytes or total <= 1:
             self.detail.setText('')
             return
-        bits = [f'{size(done)} of {size(total)}']
+        bits = [f'{int(100 * done / total)}%', f'{size(done)} of {size(total)}']
         left = self.rate.left(done, total)
         if len(self.rate.marks) > 1:
             (t0, d0), (t1, d1) = self.rate.marks[0], self.rate.marks[-1]
-            if t1 > t0:
+            if t1 > t0 and d1 >= d0:
                 bits.append(f'{size((d1 - d0) / (t1 - t0))}/s')
         if left is not None:
             bits.append(minutes(left))
@@ -603,7 +617,9 @@ class Window(QWidget):
         p.go.setEnabled(False)
         p.skip.setEnabled(False)
         p.progress.show()
-        p.progress.reset('Downloading UsbDk' if self.need == 'usbdk' else 'Waiting for your password')
+        p.progress.reset('Downloading UsbDk')
+        if self.need != 'usbdk':
+            p.progress.busy('Waiting for your password')
 
         def work(job):
             if self.need == 'usbdk':
@@ -627,7 +643,7 @@ class Window(QWidget):
             p.skip.setEnabled(True)
             self.failed(e, p, 'USB access was not set up')
         self.resume = self.setup_usb
-        self.run(work, ok, p.progress, error=bad)
+        self.run(work, ok, p.progress, status=lambda _: self.need == 'usbdk' and p.progress.busy(), error=bad)
 
     # 1. welcome
     def page_welcome(self):
@@ -1181,12 +1197,13 @@ class Window(QWidget):
         p = self.p_unlock
         self.show_page(p, 4)
         p.error.hide()
-        p.progress.reset('Unlocking')
+        p.progress.reset()
+        p.progress.busy('Unlocking the bootloader')
         self.step_safe = 'If the r1 was unplugged during this, it may not start until the unlock is ' \
                          'finished. Reconnect it and press Try again.'
 
         def ok(changed):
-            p.progress.bar.setValue(1000)
+            p.progress.set(1, 1)
             p.progress.status.setText('Unlocked' if changed else 'The bootloader was already unlocked')
             QTimer.singleShot(1200, self.start_install_writes)
         self.resume = self.start_unlock
