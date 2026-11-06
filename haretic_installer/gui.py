@@ -903,8 +903,8 @@ class Window(QWidget):
         self.release = pick[0] if pick else (False if found else self.release)
         if self.release:
             r = self.release
-            p.variant.setText(f'{size(r["size"])} download - {r["name"]}<br>Not sure? Tick Google apps for the '
-                              'Play Store; leave Root off.')
+            p.variant.setText(f'{size(r["size"])} download - {r["name"]}<br>Not sure? Leave both off, the '
+                              'recommended build.')
         elif found:
             p.variant.setText('This release has no package with these options. Change the ticks, or use a '
                               'package file.')

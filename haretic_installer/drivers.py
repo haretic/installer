@@ -5,6 +5,7 @@ is a filter driver, so it takes every r1 USB function (boot ROM 0E8D:0003, prelo
 download agent 0E8D:2001) without replacing the COM port driver Windows binds to the preloader.
 Linux: a udev rule gives the logged-in user those three functions and keeps ModemManager off the
 preloader's serial port. macOS needs nothing."""
+import glob
 import hashlib
 import os
 import subprocess
@@ -28,12 +29,25 @@ RULES = ''.join(
     f'SUBSYSTEMS=="usb", ATTRS{{idVendor}}=="{r1.VENDOR:04x}", ENV{{ID_MM_DEVICE_IGNORE}}="1"\n'
 
 
+def other_rule(path):
+    """Whether a udev rules file already opens MediaTek's USB vendor ID to users, as mtkclient's own
+    rules do."""
+    try:
+        with open(path, errors='replace') as f:
+            lines = [line.lower() for line in f if not line.lstrip().startswith('#')]
+    except OSError:
+        return False
+    return any(f'"{r1.VENDOR:04x}"' in line and ('uaccess' in line or 'mode="0666"' in line)
+               for line in lines)
+
+
 def needed():
     """None if USB is ready, else 'usbdk' or 'udev'."""
     if sys.platform == 'win32':
         return None if usbdk_installed() else 'usbdk'
     if sys.platform.startswith('linux'):
-        if os.geteuid() == 0 or any(os.path.exists(os.path.join(d, RULE_NAME)) for d in RULE_DIRS):
+        if os.geteuid() == 0 or any(os.path.exists(os.path.join(d, RULE_NAME)) for d in RULE_DIRS) \
+                or any(other_rule(p) for d in RULE_DIRS for p in glob.glob(os.path.join(d, '*.rules'))):
             return None
         return 'udev'
     return None
