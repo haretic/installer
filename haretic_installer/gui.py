@@ -1096,7 +1096,7 @@ class Window(QWidget):
         info = self.session.info
         p.error.hide()
         lk = {'haretic': 'haretic', 'stock': 'rabbitOS (v0.8.293)', 'other': 'rabbitOS'}
-        haretic = info.system == 'haretic' and info.slot == 'a'
+        haretic = info.system == 'haretic'  # either slot: B after an update over the air
         running = lk[info.lk[info.slot]]
         if haretic and info.installed:
             i = info.installed
