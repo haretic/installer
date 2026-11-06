@@ -15,10 +15,11 @@ import urllib.request
 from . import r1, sparse
 
 RELEASES = 'https://api.github.com/repos/haretic/release/releases'
-# Named as GSIs are: haretic-<date>-<time>-<style>[-aosp]-r1_b<v|g><N|S>.tar.xz, b an A/B device, v vanilla
-# or g with Google apps, N not rooted or S rooted (Magisk). -aosp: plain LineageOS with only what
-# the r1 needs to run, none of haretic's changes; offered, not recommended.
-NAME = re.compile(r'^(?P<version>haretic-\d{8}-\d{4}-[a-z]+)(?P<aosp>-aosp)?-r1_b(?P<apps>[vg])(?P<root>[NS])\.tar\.xz$')
+# Named as GSIs are: haretic-<date>-<time>-<channel>[-aosp]-r1_b<v|g><N|S>.tar.xz, b an A/B device, v
+# vanilla or g with Google apps, N not rooted or S rooted (Magisk). -aosp: plain LineageOS with only
+# what the r1 needs to run, none of haretic's changes; offered, not recommended. Packages before the
+# time was added have none.
+NAME = re.compile(r'^(?P<version>haretic-\d{8}(?:-\d{4})?-[a-z]+)(?P<aosp>-aosp)?-r1_b(?P<apps>[vg])(?P<root>[NS])\.tar\.xz$')
 SUFFIX = '.tar.xz'
 
 

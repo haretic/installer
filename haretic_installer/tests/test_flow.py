@@ -354,5 +354,48 @@ class Flow(unittest.TestCase):
         r1.check_layout(r1.parse_gpt(simdata.gpt()))
 
 
+class Names(unittest.TestCase):
+    """Package names and versions, with and without the build time."""
+
+    def test_version_date(self):
+        vd = flow.version_date
+        self.assertEqual(vd('haretic-20261105-1430-nightly'), ('20261105', '1430'))
+        self.assertEqual(vd('haretic-20261105-nightly'), ('20261105', ''))
+        self.assertEqual(vd('haretic-20261105-1430-beta-aosp'), ('20261105', '1430'))
+        for v in (None, '', 'lineage-24.0-20261105', 'haretic-2026110-nightly'):
+            self.assertFalse(vd(v), v)
+        # an r1 installed before the time was added: any build of that day or later is newer
+        self.assertLess(vd('haretic-20261105-nightly'), vd('haretic-20261105-0001-nightly'))
+        self.assertLess(vd('haretic-20261104-2359-nightly'), vd('haretic-20261105-nightly'))
+        self.assertLess(vd('haretic-20261105-0959-nightly'), vd('haretic-20261105-1000-nightly'))
+
+    def test_update_problems_old_versions(self):
+        pkg = type('P', (), {'aosp': False, 'gapps': False, 'root': False})
+        installed = {'version': 'haretic-20261105-nightly', 'aosp': False, 'gapps': False, 'root': False}
+        pkg.version = 'haretic-20261105-0900-nightly'
+        self.assertEqual(flow.update_problems(installed, pkg), [])
+        pkg.version = 'haretic-20261104-2300-nightly'
+        self.assertEqual([k for k, _ in flow.update_problems(installed, pkg)], ['downgrade'])
+        installed['version'] = None  # builds before the haretic properties: no check
+        self.assertEqual(flow.update_problems(installed, pkg), [])
+
+    def test_name(self):
+        for gapps in (False, True):
+            for root in (False, True):
+                for aosp in (False, True):
+                    for version in ('haretic-20261106-0130-nightly', 'haretic-20261105-beta'):
+                        name = package.file_name(version, gapps, root, aosp)
+                        m = package.NAME.match(name)
+                        self.assertTrue(m, name)
+                        self.assertEqual((m['version'], bool(m['aosp']), m['apps'] == 'g', m['root'] == 'S'),
+                                         (version, aosp, gapps, root))
+        self.assertEqual(package.file_name('haretic-20261106-0130-release', True, False, True),
+                         'haretic-20261106-0130-release-aosp-r1_bgN.tar.xz')
+        for bad in ('haretic-20261106-0130-nightly-r1_bvN.tar.gz', 'haretic-20261106-0130-nightly-r1_avN.tar.xz',
+                    'haretic-20261106-0130-nightly-r1_bvN-ota.zip', 'haretic-20261106-0130-nightly-r1_bvN.tar.xz.part',
+                    'haretic-20261106-130-nightly-r1_bvN.tar.xz', 'haretic-20261106-0130-Nightly-r1_bvN.tar.xz'):
+            self.assertIsNone(package.NAME.match(bad), bad)
+
+
 if __name__ == '__main__':
     unittest.main()
