@@ -8,7 +8,7 @@ import time
 import traceback
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QRadioButton, QScrollArea, QStackedWidget, QStyle, QStyleOptionButton,
@@ -136,9 +136,11 @@ class R1Picture(QWidget):
         self.phase = 0.0
         self.state = 'off'
         self.timer = QTimer(self, interval=50, timeout=self.tick)
+        self.setAccessibleName('The r1 plugged into this computer')
 
     def set_state(self, state):
         self.state = state
+        self.setAccessibleDescription({'waiting': 'Waiting for the r1', 'connected': 'Connected'}.get(state, ''))
         if state == 'waiting':
             self.timer.start()
         else:
@@ -156,17 +158,45 @@ class R1Picture(QWidget):
         s = min(w / 260, h / 150)
         p.translate((w - 260 * s) / 2, (h - 150 * s) / 2)
         p.scale(s, s)
-        # the r1: orange body, black screen on the left, the wheel on the right
+        # The r1 as measured off photos, in fractions of its square body: the black panel with the
+        # display on the left; on the right the camera block on top, the wheel below it and the
+        # side button on the edge, level with the wheel's middle
+
+        def box(x0, y0, x1, y1):
+            return QRectF(10 + 110 * x0, 20 + 110 * y0, 110 * (x1 - x0), 110 * (y1 - y0))
         p.setPen(Qt.NoPen)
+        p.setBrush(QColor('#b8b8b8'))
+        p.drawRoundedRect(box(0.98, 0.36, 1.02, 0.47), 1.5, 1.5)
         p.setBrush(QColor(ORANGE))
-        p.drawRoundedRect(QRectF(10, 20, 110, 110), 18, 18)
-        p.setBrush(QColor('#0a0a0a'))
-        p.drawRoundedRect(QRectF(20, 32, 72, 86), 6, 6)
+        p.drawRoundedRect(box(0, 0, 1, 1), 9.4, 9.4)
+        p.setBrush(QColor('#080808'))
+        p.drawRoundedRect(box(0.02, 0.027, 0.71, 0.966), 7, 7)
+        p.setBrush(QColor('#161616'))
+        p.drawRoundedRect(box(0.085, 0.11, 0.645, 0.855), 2, 2)
         if self.state == 'connected':
             p.setBrush(QColor(ORANGE))
-            p.drawEllipse(QPointF(56, 75), 6, 6)
-        p.setBrush(QColor('#3a2418'))
-        p.drawRoundedRect(QRectF(100, 66, 12, 34), 6, 6)
+            p.drawEllipse(box(0.085, 0.11, 0.645, 0.855).center(), 6, 6)
+        cam = box(0.754, 0.042, 0.951, 0.237)
+        p.setBrush(QColor('#5c1d12'))
+        p.drawRoundedRect(cam, 5, 5)
+        hole = cam.adjusted(3.2, 3.2, -3.2, -3.2)
+        drum = QLinearGradient(hole.topLeft(), hole.bottomLeft())
+        drum.setColorAt(0, QColor('#6e2a14'))
+        drum.setColorAt(0.45, QColor('#e2642f'))
+        p.setBrush(drum)
+        p.drawRoundedRect(hole, 3.5, 3.5)
+        p.setBrush(QColor('#1a1a1a'))
+        p.drawEllipse(QPointF(hole.center().x(), hole.top() + hole.height() * 0.6), 2.4, 2.4)
+        wheel = box(0.75, 0.31, 0.948, 0.52)
+        p.setBrush(QColor('#3a1a10'))
+        p.drawRoundedRect(wheel, 3, 3)
+        roll = wheel.adjusted(1.5, 1.5, -1.5, -1.5)
+        shade = QLinearGradient(roll.topLeft(), roll.bottomLeft())
+        shade.setColorAt(0, QColor('#8a3a1c'))
+        shade.setColorAt(0.5, QColor('#f08050'))
+        shade.setColorAt(1, QColor('#8a3a1c'))
+        p.setBrush(shade)
+        p.drawRoundedRect(roll, 2, 2)
         # the computer
         p.setBrush(QColor('#2c2c2c'))
         p.drawRoundedRect(QRectF(170, 38, 80, 56), 5, 5)
@@ -915,6 +945,8 @@ class Window(QWidget):
         p.body.addLayout(row)
         p.state = label('', 'status')
         p.body.addWidget(p.state)
+        p.tips = button('Not showing up?', 'link')
+        p.body.addWidget(p.tips, 0, Qt.AlignLeft)
         p.help, hl = frame('card')
         hl.addWidget(label('<b>Not showing up?</b>'))
         hl.addWidget(label('- Try another cable: many only charge.<br>'
@@ -927,7 +959,12 @@ class Window(QWidget):
         p.cancel = button('Stop waiting')
         p.buttons.addWidget(p.cancel)
         p.cancel.clicked.connect(lambda: self.job and setattr(self.job, 'stop', True))
-        p.timer = QTimer(p, singleShot=True, interval=45000, timeout=p.help.show)
+
+        def tips():
+            p.tips.hide()
+            p.help.show()
+        p.tips.clicked.connect(tips)
+        p.timer = QTimer(p, singleShot=True, interval=45000, timeout=tips)
         return p
 
     def start_connect(self, after=None):
@@ -935,6 +972,7 @@ class Window(QWidget):
         self.show_page(p, 1)
         p.error.hide()
         p.help.hide()
+        p.tips.show()
         p.picture.set_state('waiting')
         p.state.setText('Waiting for the r1...')
         p.timer.start()
@@ -970,6 +1008,7 @@ class Window(QWidget):
             if text != texts['waiting']:
                 p.timer.stop()
                 p.help.hide()
+                p.tips.hide()
 
         def ok(session):
             self.session = session
@@ -982,6 +1021,7 @@ class Window(QWidget):
             p.picture.set_state('off')
             p.timer.stop()
             p.help.hide()
+            p.tips.hide()
             p.cancel.setEnabled(False)
             if not isinstance(e, flow.StepError) and self.device:
                 self.device.close()
