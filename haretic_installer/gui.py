@@ -599,8 +599,7 @@ class Window(QWidget):
         w = page.nextInFocusChain()
         while page.isAncestorOf(w) and not (w.isVisibleTo(page) and w.isEnabled() and w.focusPolicy() & Qt.TabFocus):
             w = w.nextInFocusChain()
-        if page.isAncestorOf(w):
-            w.setFocus()
+        (w if page.isAncestorOf(w) else page).setFocus()
 
     def failed(self, e, page=None, head=None):
         """Show an exception on the current page's error card."""
