@@ -267,7 +267,7 @@ def label(text, name=None, wrap=True):
 
 def bullets(items):
     """A list with orange dashes and hanging lines."""
-    return '<table cellspacing="0" cellpadding="2">' + ''.join(
+    return '<table cellspacing="0" cellpadding="1">' + ''.join(
         f'<tr><td valign="top" style="padding-right:6px"><span style="color:{ORANGE};font-weight:600">-</span></td>'
         f'<td>{t}</td></tr>'
         for t in items) + '</table>'
@@ -720,12 +720,12 @@ class Window(QWidget):
                  '30 minutes.')
         card, lay = frame('card')
         lay.addWidget(label('<b>Before you start</b>'))
-        lay.addWidget(label('- A USB-C cable that carries data (some cables only charge)<br>'
-                            '- About 15 GB free on this computer, for a backup of the r1<br>'
-                            '- The r1 charged to at least 30%'))
+        lay.addWidget(label(bullets(['A USB-C cable that carries data (some cables only charge)',
+                                     'About 15 GB free on this computer, for a backup of the r1',
+                                     'The r1 charged to at least 30%'])))
         p.body.addWidget(card)
         warn, wl = frame('warn')
-        wl.addWidget(label('Installing erases everything on the r1. The installer first backs up '
+        wl.addWidget(label('<b>Installing erases everything on the r1.</b> The installer first backs up '
                            'rabbitOS into one restore file, which this app can put back later.'))
         p.body.addWidget(warn)
         src, sl = frame('card')
@@ -736,11 +736,19 @@ class Window(QWidget):
         p.local = QRadioButton('An install package on this computer')
         p.group.addButton(p.online)
         p.group.addButton(p.local)
-        sl.addWidget(p.online)
+        row = QHBoxLayout()
+        row.addWidget(p.online)
+        p.again = button('Look again', 'link')
+        p.again.hide()
+        row.addWidget(p.again)
+        row.addStretch(1)
+        sl.addLayout(row)
         opts = QHBoxLayout()
-        opts.setContentsMargins(28, 0, 0, 4)
+        opts.setContentsMargins(28, 0, 0, 0)
         p.gapps = Check('Google apps (Play Store and Google services)')
+        p.gapps.setToolTip('Adds the Play Store and Google services, which some apps need.')
         p.root = Check('Root (Magisk)')
+        p.root.setToolTip('Adds Magisk, which lets apps you allow take full control of the r1. For advanced users.')
         for c in (p.gapps, p.root):
             c.setEnabled(False)
             opts.addWidget(c)
@@ -748,7 +756,7 @@ class Window(QWidget):
         opts.addStretch(1)
         sl.addLayout(opts)
         p.variant = label('', 'small')
-        p.variant.setContentsMargins(28, 0, 0, 0)
+        p.variant.setContentsMargins(28, 0, 0, 4)
         sl.addWidget(p.variant)
         row = QHBoxLayout()
         row.addWidget(p.local)
@@ -757,6 +765,8 @@ class Window(QWidget):
         row.addStretch(1)
         sl.addLayout(row)
         p.picked = label('', 'small')
+        p.picked.setContentsMargins(28, 0, 0, 0)
+        p.picked.hide()
         sl.addWidget(p.picked)
         p.body.addWidget(src)
         p.restore = button('Put rabbitOS back from a backup instead', 'link')
@@ -768,7 +778,15 @@ class Window(QWidget):
         p.group.buttonClicked.connect(lambda _: self.welcome_ready())
         p.start.clicked.connect(self.start_install)
         p.restore.clicked.connect(self.show_restore)
+        p.again.clicked.connect(self.look_again)
         return p
+
+    def look_again(self):
+        p = self.p_welcome
+        p.again.hide()
+        p.online.setText('Looking for the latest haretic release...')
+        self.release, self.asked_release = None, False
+        self.show_welcome()
 
     def show_welcome(self):
         self.stepper.set_steps(STEPS)
@@ -790,11 +808,13 @@ class Window(QWidget):
                         p.online.setChecked(True)
                 else:
                     p.online.setText('No haretic release is published yet - use a package file')
+                    p.again.show()
                 self.variant_text()
 
             def bad(e):
                 self.release = False
                 p.online.setText('Could not reach GitHub to find haretic releases - use a package file')
+                p.again.show()
                 self.log(f'release lookup: {e}')
             self.run(lambda job: package.latest(), ok, error=bad)
 
@@ -811,7 +831,8 @@ class Window(QWidget):
         self.pkg, self.pkg_path, self.verified = pkg, path, False
         p = self.p_welcome
         p.local.setChecked(True)
-        p.picked.setText(f'{pkg.version}, {package.describe(pkg.gapps, pkg.root)} - {os.path.basename(path)}')
+        p.picked.setText(f'{pkg.version}, {package.describe(pkg.gapps, pkg.root, pkg.aosp)} - {os.path.basename(path)}')
+        p.picked.show()
         self.welcome_ready()
 
     def variant_text(self):
@@ -822,9 +843,11 @@ class Window(QWidget):
         self.release = pick[0] if pick else (False if found else self.release)
         if self.release:
             r = self.release
-            p.variant.setText(f'{r["name"]} - {size(r["size"])}')
+            p.variant.setText(f'{size(r["size"])} download - {r["name"]}<br>Not sure? Tick Google apps for the '
+                              'Play Store; leave Root off.')
         elif found:
-            p.variant.setText('This combination is not in the release.')
+            p.variant.setText('This release has no package with these options. Change the ticks, or use a '
+                              'package file.')
         self.welcome_ready()
 
     def welcome_ready(self):
