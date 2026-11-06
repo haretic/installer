@@ -1503,8 +1503,8 @@ class Window(QWidget):
     # restore
     def page_restore(self):
         p = Page('Put rabbitOS back', 'Writes a restore file made by this installer back to the r1 it '
-                 'came from. Everything the installer changed returns to how it was; haretic and its '
-                 'data are erased. The whole file is checked before anything is written.')
+                 'came from: the r1 returns to how it was when the backup was made, and what is on it now '
+                 'is erased. The whole file is checked before anything is written.')
         card, lay = frame('card')
         lay.addWidget(label('<b>Restore file</b>'))
         p.chosen = label('')
