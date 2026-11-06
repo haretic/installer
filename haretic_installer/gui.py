@@ -952,11 +952,8 @@ class Window(QWidget):
         p.body.addWidget(p.tips, 0, Qt.AlignLeft)
         p.help, hl = frame('card')
         hl.addWidget(label('<b>Not showing up?</b>'))
-        hl.addWidget(label('- Try another cable: many only charge.<br>'
-                           '- Use a port on the computer itself, not a hub or a monitor.<br>'
-                           '- Make sure the r1 is really off: unplug, hold the side button 10 seconds, plug in again.'
-                           + ('<br>- If Windows plays no sound when you plug it in, try another port.'
-                              if sys.platform == 'win32' else '')))
+        p.help_text = label('')
+        hl.addWidget(p.help_text)
         p.help.hide()
         p.body.addWidget(p.help)
         p.cancel = button('Stop waiting')
@@ -976,6 +973,12 @@ class Window(QWidget):
         p.error.hide()
         p.help.hide()
         p.tips.show()
+        p.help_text.setText(bullets(
+            ['Try another cable: many only charge.', 'Use a port on the computer itself, not a hub or a monitor.',
+             'Make sure the r1 is really off: unplug it, hold the side button for 10 seconds, plug it in again.']
+            + ['If Windows plays no sound when you plug it in, try another port.'] * (sys.platform == 'win32')
+            + ['The one-time USB setup was skipped: close the installer and open it again to do it.']
+            * bool(not self.demo and drivers.needed())))
         p.picture.set_state('waiting')
         p.state.setText('Waiting for the r1...')
         p.timer.start()
