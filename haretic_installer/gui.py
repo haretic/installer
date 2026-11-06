@@ -503,6 +503,7 @@ class Window(QWidget):
         self.allow_downgrade = False
         self.why_clicks = 0
         self.restore_file = None
+        self.restore_cid = None
         self.backup_file = None
         self.cid = None
         self.resume = None  # the step to go on with after a reconnect
@@ -1520,15 +1521,20 @@ class Window(QWidget):
         p.stopped = 'Restoring stopped'
         p.on_error = lambda: (p.back.setEnabled(True), p.pick.setEnabled(True))
         p.pick.clicked.connect(self.pick_backup)
-        p.back.clicked.connect(self.show_welcome)
+        p.back.clicked.connect(self.restore_back)
         p.go.clicked.connect(self.restore_continue)
         return p
 
     def restore_continue(self):
         """Connect the r1, or, when it still is from a question put off, ask again."""
-        if self.device and self.session and self.session.info.identity['cid'] == self.cid:
+        if self.device and self.session and self.session.info.identity['cid'] == self.restore_cid:
             return self.show_restore_confirm()
+        self.cid = self.restore_cid  # from here on, only the r1 the file came from
         self.start_connect(after=self.show_check)
+
+    def restore_back(self):
+        self.cid = None  # no restore: any r1 can be installed
+        self.show_welcome()
 
     def show_restore(self):
         self.stepper.set_steps(RESTORE_STEPS)
@@ -1556,11 +1562,11 @@ class Window(QWidget):
     def set_restore(self, path, m):
         p = self.p_restore
         self.restore_file = path
-        self.cid = m['device']['cid']
+        self.restore_cid = m['device']['cid']  # bound only once the restore goes ahead
         what = self.restore_system = 'haretic' if m['device']['system'] == 'haretic' else 'rabbitOS'
         p.title.setText(f'Put {what} back')
         p.chosen.setText(f'{what}, backed up {m["created"].replace("T", " ")[:16]} from the r1 with storage '
-                         f'ID {self.cid[:8]}...')
+                         f'ID {self.restore_cid[:8]}...')
         p.path.setText(path)
         p.pick.setText('Choose another restore file...')
         p.go.setEnabled(True)
