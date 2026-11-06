@@ -240,8 +240,13 @@ class Session:
         """Back up the r1 into a new or unfinished folder under root, then pack it into the restore
         file; returns the file's path."""
         cid = self.info.identity['cid']
-        folder = unfinished_backup(root, cid) or os.path.join(
-            root, f'r1-backup-{cid[:8]}-{datetime.datetime.now():%Y%m%d-%H%M%S}')
+        folder = unfinished_backup(root, cid, self.info.summary())
+        if folder is None:
+            folder = base = os.path.join(root, f'r1-backup-{cid[:8]}-{datetime.datetime.now():%Y%m%d-%H%M%S}')
+            n = 1
+            while os.path.exists(folder):  # never into a folder of another state
+                n += 1
+                folder = f'{base}-{n}'
         os.makedirs(folder, exist_ok=True)
         plan = self.backup_plan(include_userdata)
         need = sum(p[3] for p in plan) // 2
@@ -251,7 +256,7 @@ class Session:
                             f'but {folder} has {fmt_size(free)} free.',
                             hint='Choose another folder or free up space.')
         path = os.path.join(folder, 'manifest.json')
-        manifest = json.load(open(path)) if os.path.exists(path) else {
+        manifest = read_manifest(folder) or {
             'schema': 1, 'kind': 'r1-backup', 'created': datetime.datetime.now().isoformat(timespec='seconds'),
             'device': self.info.summary(), 'parts': {}, 'complete': False}
         if manifest['device']['cid'] != cid:
@@ -646,11 +651,12 @@ def archive_manifest(path):
         return None
 
 
-def unfinished_backup(root, cid):
-    """A backup folder of this r1 still being read or packed."""
+def unfinished_backup(root, cid, device=None):
+    """A backup folder of this r1 still being read or packed; with device, only one begun while the
+    r1 was as it is now, so a backup of rabbitOS is never finished with haretic's partitions."""
     for name in sorted(os.listdir(root)) if os.path.isdir(root) else ():
         m = read_manifest(os.path.join(root, name))
-        if m and m['device']['cid'] == cid:
+        if m and m['device']['cid'] == cid and (device is None or m['device'] == device):
             return os.path.join(root, name)
     return None
 

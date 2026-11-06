@@ -191,6 +191,23 @@ class Flow(unittest.TestCase):
         self.assertTrue(archive_manifest(folder)['complete'])
         self.assertEqual(os.listdir(os.path.join(self.dir, 'backups')), [os.path.basename(folder)])
 
+    def test_unfinished_backup_of_another_state_is_not_resumed(self):
+        """A rabbitOS backup cut short, then haretic installed: a backup of haretic starts afresh
+        rather than finishing the rabbitOS restore file with haretic's partitions."""
+        s, dev = self.session(fail_at=200 << 20)
+        root = os.path.join(self.dir, 'backups')
+        with self.assertRaises(DeviceError):
+            s.backup(root)
+        stale = os.listdir(root)
+        dev.write(PLACE['lk_a'][0], LK)
+        s2 = Session(dev, Log())
+        s2.inspect(s2.connect(lambda st: None))
+        self.assertEqual(s2.info.system, 'haretic')
+        own = s2.backup(root)
+        self.assertTrue(os.path.basename(own).startswith('r1-haretic-backup-'))
+        self.assertEqual(archive_manifest(own)['device']['system'], 'haretic')
+        self.assertEqual(sorted(os.listdir(root)), sorted(stale + [os.path.basename(own)]))
+
     def test_damaged_restore_file_writes_nothing(self):
         s, dev, path, before = self.run_clean('a')
         raw = bytearray(open(path, 'rb').read())
