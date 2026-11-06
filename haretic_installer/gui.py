@@ -907,6 +907,9 @@ class Window(QWidget):
         p.error.hide()
         p.cancel.setEnabled(True)
         online = self.p_welcome.online.isChecked()
+        p.lead.setText(('Downloading the haretic install package, then unpacking it' if online else
+                        'Unpacking the haretic install package') + ' and checking every image in it, so '
+                       'nothing damaged reaches the r1.' + (' A stopped download continues where it was.' * online))
 
         def work(job):
             if online:
