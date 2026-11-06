@@ -58,8 +58,8 @@ QRadioButton, QCheckBox {{ spacing: 10px; padding: 4px 0; }}
 QRadioButton::indicator, QCheckBox::indicator {{ width: 14px; height: 14px; border: 2px solid #6a6a6a; background: #141414; }}
 QRadioButton::indicator {{ border-radius: 9px; }}
 QCheckBox::indicator {{ border-radius: 4px; }}
-QRadioButton::indicator:hover, QCheckBox::indicator:hover, QRadioButton::indicator:focus,
-QCheckBox::indicator:focus {{ border-color: {ORANGE}; }}
+QRadioButton::indicator:focus, QCheckBox::indicator:focus {{ border-color: #c0c0c0; }}
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {{ border-color: {ORANGE}; }}
 QRadioButton::indicator:checked {{ border-color: {ORANGE}; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {ORANGE}, stop:0.45 {ORANGE}, stop:0.55 #141414, stop:1 #141414); }}
 QCheckBox::indicator:checked {{ border-color: {ORANGE}; background: {ORANGE}; }}
 QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{ border-color: #333; }}
@@ -804,6 +804,7 @@ class Window(QWidget):
         sl.addLayout(opts)
         p.variant = label('', 'small')
         p.variant.setContentsMargins(28, 0, 0, 4)
+        p.variant.hide()
         sl.addWidget(p.variant)
         row = QHBoxLayout()
         row.addWidget(p.local)
@@ -900,6 +901,7 @@ class Window(QWidget):
         elif found:
             p.variant.setText('This release has no package with these options. Change the ticks, or use a '
                               'package file.')
+        p.variant.setVisible(bool(p.variant.text()))
         self.welcome_ready()
 
     def welcome_ready(self):
