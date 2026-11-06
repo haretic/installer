@@ -602,8 +602,9 @@ class Window(QWidget):
             w = w.nextInFocusChain()
         (w if page.isAncestorOf(w) else page).setFocus()
 
-    def failed(self, e, page=None, head=None):
-        """Show an exception on the current page's error card."""
+    def failed(self, e, page=None, head=None, done=None):
+        """Show an exception on the current page's error card; done replaces the safety line when
+        the work itself finished."""
         page = page or self.pages.currentWidget()
         card = page.error
         head = head or getattr(page, 'stopped', 'This step stopped')
@@ -639,6 +640,8 @@ class Window(QWidget):
         else:
             text = f'Something unexpected happened: {type(e).__name__}: {e}'
             hint = 'The details have the full error; please save the log and report it.'
+        if done:
+            safe, hint = done, None
         self.stepper.set(self.stepper.current, failed=not calm)
         if card.on_retry:
             card.retry.clicked.disconnect(card.on_retry)
@@ -1490,7 +1493,12 @@ class Window(QWidget):
                 p.keep.setVisible(bool(self.backup_file))
             self.show_page(p)
         self.resume = self.start_boot
-        self.run(lambda job: self.with_reporter(job, self.session.boot), ok)
+        # Only the restart is left: whatever stops it, the r1 has all it needs
+        done = (f'{self.restore_system} is restored' if self.restore_file else 'haretic is installed') + \
+            '; only the restart did not happen. Unplug the r1, then hold its side button until it starts.'
+        self.step_safe = done
+        self.run(lambda job: self.with_reporter(job, self.session.boot), ok,
+                 error=lambda e: self.failed(e, head='The r1 did not restart', done=done))
 
     # restore
     def page_restore(self):
