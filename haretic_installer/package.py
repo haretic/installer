@@ -71,6 +71,11 @@ class Package:
                 raise PackageError(f'The package has no {name}.')
             if limit and image['size'] > limit:
                 raise PackageError(f'{name} is larger than its partition.')
+        # An r1 is told apart from rabbitOS by its LK: one this installer doesn't know would leave
+        # the r1 looking like rabbitOS after the install, refused updates and its backups misnamed
+        if m['images']['lk']['size'] != r1.LK_PAYLOAD or m['images']['lk']['sha256'] not in r1.LK_HARETIC:
+            raise PackageError('This package has a haretic bootloader this installer does not know yet. '
+                               'Get the newest haretic installer.')
         if not isinstance(m.get('version'), str):
             raise PackageError('The package does not say which haretic it is.')
         self.version = m['version']

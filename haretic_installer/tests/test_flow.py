@@ -436,6 +436,20 @@ class Names(unittest.TestCase):
                 with self.assertRaises(package.PackageError, msg=manifest):
                     package.Package(path)
 
+    def test_unknown_lk_is_refused(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
+            manifest = {'schema': 1, 'product': 'haretic_r1', 'version': 'haretic-20261105-1430-beta',
+                        'images': {k: {'file': n, 'size': 1, 'sha256': '0'} for k, n, _ in package.IMAGES}}
+            manifest['images']['lk'].update(size=r1.LK_PAYLOAD, sha256=hashlib.sha256(b'new lk').hexdigest())
+            path = os.path.join(d, 'p.tar.xz')
+            blob = json.dumps(manifest).encode()
+            with tarfile.open(path, 'w:xz') as t:
+                info = tarfile.TarInfo('manifest.json')
+                info.size = len(blob)
+                t.addfile(info, __import__('io').BytesIO(blob))
+            with self.assertRaisesRegex(package.PackageError, 'bootloader'):
+                package.Package(path)
+
 
 if __name__ == '__main__':
     unittest.main()
