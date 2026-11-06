@@ -352,6 +352,7 @@ class Page(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFocusPolicy(Qt.NoFocus)  # no invisible Tab stop; it scrolls to what has the focus
         outer.addWidget(scroll, 1)
         self.lay = QVBoxLayout(content)
         self.lay.setContentsMargins(36, 30, 36, 12)
@@ -592,7 +593,13 @@ class Window(QWidget):
         main = [b for b in page.findChildren(QPushButton)
                 if b.objectName() == 'primary' and b.isVisibleTo(page) and b.isEnabled()]
         if main:
-            main[-1].setFocus()
+            return main[-1].setFocus()
+        # else the page's first control, not the details link beside it
+        w = page.nextInFocusChain()
+        while page.isAncestorOf(w) and not (w.isVisibleTo(page) and w.isEnabled() and w.focusPolicy() & Qt.TabFocus):
+            w = w.nextInFocusChain()
+        if page.isAncestorOf(w):
+            w.setFocus()
 
     def failed(self, e, page=None, head=None):
         """Show an exception on the current page's error card."""
