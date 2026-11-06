@@ -420,14 +420,16 @@ class Session:
         if mode not in ('clean', 'update'):
             raise ValueError(mode)
         if mode == 'update' and self.info.lk[self.info.slot] != 'haretic':
-            raise StepError('This r1 does not run haretic, so it needs a clean install.')
+            raise StepError('This r1 does not run haretic, so it needs a clean install. Nothing was '
+                            'changed.')
         if mode == 'update':
             for kind, text in update_problems(self.info.installed, pkg):
                 if kind == 'refuse' or kind == 'downgrade' and not allow_downgrade:
                     raise StepError(text + ' Nothing was changed.')
                 self.rep.log(f'update: {text}')
         if self.info.lock != 'unlocked':
-            raise StepError('The bootloader is still locked.')
+            raise StepError('The bootloader is still locked, so the r1 would not start haretic. Nothing '
+                            'was changed.', hint='Unlock it first: run the unlock step again.')
         ops = self.install_plan(pkg, mode)
         with pkg.open('super') as f:
             super_bytes = sparse.written_bytes(f)
