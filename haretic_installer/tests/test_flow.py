@@ -157,10 +157,14 @@ class Flow(unittest.TestCase):
         s.install(self.pkg, 'clean')
         self.assertEqual(s.done, s.total)  # the plan counts every byte moved, tee_b's 8 MiB too
         self.install_checks(s, dev, before)
-        if slot == 'b':
-            for name in r1.SLOT_FIRMWARE:
-                a = self.part(dev, name + '_a', PLACE[name + '_b'][1] if PLACE[name + '_b'][1] < PLACE[name + '_a'][1] else None)
-                self.assertTrue(a.startswith(before[name + '_b'][:64]), name)
+        # the slot the r1 ran keeps its firmware whole, the other gets it: tee_b's 3 MiB past tee_a stay
+        ran, other = slot, 'ab'[slot == 'a']
+        for name in r1.SLOT_FIRMWARE:
+            self.assertEqual(self.part(dev, f'{name}_{ran}'), before[f'{name}_{ran}'], name)
+            got, had = self.part(dev, f'{name}_{other}'), before[f'{name}_{ran}']
+            n = min(len(got), len(had))
+            self.assertEqual(got[:n], had[:n], name)
+            self.assertEqual(got[n:], before[f'{name}_{other}'][n:], name)
         return s, dev, folder, before
 
     def test_clean_slot_a(self):
@@ -307,10 +311,20 @@ class Flow(unittest.TestCase):
         self.assertFalse(s.info.installed['root'])
         with self.assertRaises(StepError):
             s.install(self.pkg, 'update')
+        firmware = {n: self.part(dev, n + '_a') for n in r1.SLOT_FIRMWARE}
         s.install(self.pkg, 'update', allow_downgrade=True)
+        self.assertEqual(s.done, s.total)
         self.assertEqual(self.part(dev, 'boot_a'), self.files['boot'])
         rec = dev.read('user', PLACE['para'][0] + r1.RECORD_OFFSET, 32)
         self.assertEqual(r1.record_slot(rec), 'a')
+        # slot B ready for the next update over the air, with slot A's firmware
+        self.assertEqual(self.part(dev, 'lk_b', r1.LK_PAYLOAD), LK)
+        self.assertEqual(self.part(dev, 'dtbo_b', len(self.files['dtbo'])), self.files['dtbo'])
+        for name in ('vendor_boot_b', 'init_boot_b'):
+            self.assertEqual(self.part(dev, name), bytes(PLACE[name][1]), name)
+        for name, data in firmware.items():
+            self.assertEqual(self.part(dev, name + '_a'), data, name)
+            self.assertEqual(self.part(dev, name + '_b', len(data)), data, name)
 
     def test_cli_downgrade(self):
         """The terminal's update refuses an older build, and --allow-downgrade lets it through."""
