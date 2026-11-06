@@ -56,6 +56,7 @@ QRadioButton::indicator:checked {{ border-color: {ORANGE}; background: qradialgr
 QCheckBox::indicator:checked {{ border-color: {ORANGE}; background: {ORANGE}; }}
 QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{ border-color: #333; }}
 QRadioButton:disabled, QCheckBox:disabled {{ color: #666; }}
+QLabel#qt_msgbox_informativelabel {{ min-width: 420px; }}
 '''
 
 
@@ -236,6 +237,14 @@ def label(text, name=None, wrap=True):
     return w
 
 
+def bullets(items):
+    """A list with orange dashes and hanging lines."""
+    return '<table cellspacing="0" cellpadding="2">' + ''.join(
+        f'<tr><td valign="top" style="padding-right:6px"><span style="color:{ORANGE};font-weight:600">-</span></td>'
+        f'<td>{t}</td></tr>'
+        for t in items) + '</table>'
+
+
 def frame(name):
     f = QFrame()
     f.setObjectName(name)
@@ -282,6 +291,7 @@ class Page(QWidget):
         self.lay.addStretch(1)
         self.buttons = QHBoxLayout()
         self.buttons.setContentsMargins(36, 12, 36, 24)
+        self.buttons.setSpacing(10)
         self.buttons.addStretch(1)
         outer.addLayout(self.buttons)
 
@@ -1095,20 +1105,43 @@ class Window(QWidget):
                 self.confirm_writes()
                 return
             self.backup_file = path
-            box = QMessageBox(self)
-            box.setWindowTitle('Keep the restore file safe')
-            box.setText('<b>Keep the restore file safe</b>')
-            box.setInformativeText(f'rabbitOS is backed up in {path}.<br><br>This file is the only '
-                                   'way to put rabbitOS back on this r1. Copy it somewhere safe, such '
-                                   'as a USB stick or cloud storage, not only this computer.')
-            box.addButton('I will keep it safe', QMessageBox.AcceptRole)
-            show = box.addButton('Show the file', QMessageBox.ActionRole)
-            box.exec()
-            if box.clickedButton() is show:
-                self.show_file(path)
+            self.keep_safe(path)
             self.confirm_writes()
         self.resume = self.start_backup
         self.run(lambda job: self.with_reporter(job, self.session.backup, p.root, userdata), ok, p.progress)
+
+    def ask(self, title, text, go, danger=False, cancel='Not now'):
+        """A question before a step that changes the r1: True to go ahead. The safe answer is the
+        default, so Enter never erases anything."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(title)
+        box.setText(f'<b>{title}</b>')
+        box.setInformativeText(text)
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        yes = button(go, 'danger' if danger else 'primary')
+        box.addButton(yes, QMessageBox.DestructiveRole if danger else QMessageBox.AcceptRole)
+        box.setDefaultButton(box.addButton(cancel, QMessageBox.RejectRole))
+        box.exec()
+        return box.clickedButton() is yes
+
+    def keep_safe(self, path):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle('Keep the restore file safe')
+        box.setText('<b>Keep the restore file safe</b>')
+        box.setInformativeText(f'rabbitOS is backed up in <b>{os.path.basename(path)}</b>, in '
+                               f'{os.path.dirname(path)}.<br><br>This file is the only way to put rabbitOS '
+                               'back on this r1. Copy it somewhere safe, such as a USB stick or cloud '
+                               'storage, not only this computer.')
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        ok = button('I will keep it safe', 'primary')
+        box.addButton(ok, QMessageBox.AcceptRole)
+        show = box.addButton('Show the file', QMessageBox.ActionRole)
+        box.setDefaultButton(ok)
+        box.exec()
+        if box.clickedButton() is show:
+            self.show_file(path)
 
     def show_file(self, path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
@@ -1121,26 +1154,15 @@ class Window(QWidget):
         if self.mode == 'update' and not self.update_warnings():
             return self.start_install_writes()
         if self.mode == 'update':
-            box = QMessageBox(self)
-            box.setWindowTitle('Update and change what the r1 has?')
-            box.setText('<b>Update and change what the r1 has?</b>')
-            box.setInformativeText(' '.join(self.update_warnings()) + ' Your apps, files and settings stay.')
-            go = box.addButton('Update anyway', QMessageBox.AcceptRole)
-            box.addButton('Not now', QMessageBox.RejectRole)
-            box.exec()
-            if box.clickedButton() is go:
+            if self.ask('Update and change what the r1 has?', bullets(self.update_warnings())
+                        + '<p>Your apps, files and settings stay.</p>', 'Update anyway'):
                 return self.start_install_writes()
             return self.log('update not confirmed')
-        box = QMessageBox(self)
-        box.setWindowTitle('Erase the r1 and install haretic?')
-        box.setText('<b>Erase the r1 and install haretic?</b>')
-        box.setInformativeText('Everything on the r1 is erased: apps, files and settings. ' + (
-            f'The restore file {self.backup_file} can put rabbitOS back.' if self.backup_file else ''))
-        go = box.addButton('Erase and install', QMessageBox.DestructiveRole)
-        box.addButton('Not now', QMessageBox.RejectRole)
-        box.setDefaultButton(go)
-        box.exec()
-        if box.clickedButton() is go:
+        unlock = 'unlocks the bootloader, ' if self.session.info.lock != 'unlocked' else ''
+        if self.ask('Erase the r1 and install haretic?', f'The installer {unlock}erases everything on the '
+                    'r1 (apps, files and settings) and installs haretic.' + (
+                        f'<br><br>Your restore file <b>{os.path.basename(self.backup_file)}</b> can put '
+                        'rabbitOS back later.' if self.backup_file else ''), 'Erase and install', danger=True):
             self.start_unlock()
         else:
             self.log('install not confirmed')
@@ -1300,15 +1322,11 @@ class Window(QWidget):
     def show_restore_confirm(self):
         p = self.p_restore
         self.show_page(p, 2)
-        box = QMessageBox(self)
-        box.setWindowTitle('Put rabbitOS back?')
-        box.setText('<b>Put rabbitOS back on this r1?</b>')
-        box.setInformativeText('haretic and everything in it are erased; the r1 returns to the backup.')
-        go = box.addButton('Restore', QMessageBox.DestructiveRole)
-        box.addButton('Not now', QMessageBox.RejectRole)
-        box.exec()
-        if box.clickedButton() is not go:
-            return
+        what = self.restore_system
+        if not self.ask(f'Put {what} back on this r1?', 'Everything on the r1 now (apps, files and settings) '
+                        f'is erased, and the r1 returns to {what} as it was when the backup was made.',
+                        'Erase and restore', danger=True):
+            return self.log('restore not confirmed')
         self.start_restore()
 
     def start_restore(self):
@@ -1326,9 +1344,9 @@ class Window(QWidget):
     def closeEvent(self, event):
         busy = self.job is not None and self.job.isRunning()
         if busy:
-            answer = QMessageBox.question(self, paths.NAME, 'The installer is still working. Stop it and '
-                                          'close? If it is writing to the r1, run the step again later.')
-            if answer != QMessageBox.Yes:
+            if not self.ask('Stop and close?', 'The installer is still working; closing stops it. If it is '
+                            'writing to the r1, the r1 may not start until you open the installer again '
+                            'and run the step again.', 'Stop and close', danger=True, cancel='Keep working'):
                 event.ignore()
                 return
             self.job.stop = True
