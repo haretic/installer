@@ -809,6 +809,10 @@ class Window(QWidget):
         p.start.clicked.connect(self.start_install)
         p.restore.clicked.connect(self.show_restore)
         p.again.clicked.connect(self.look_again)
+        # Tab follows the page as read: each choice, then its options
+        order = (p.online, p.again, p.gapps, p.root, p.local, p.choose, p.restore, p.start)
+        for a, b in zip(order, order[1:]):
+            QWidget.setTabOrder(a, b)
         return p
 
     def look_again(self):
