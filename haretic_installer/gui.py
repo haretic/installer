@@ -3,6 +3,7 @@ with progress, time left, and errors that say what happened, whether the r1 is s
 go on."""
 import datetime
 import os
+import re
 import sys
 import time
 import traceback
@@ -19,6 +20,7 @@ from . import drivers, flow, package, paths, r1
 from .device import Cancelled, DeviceError, MtkDevice, SimDevice
 
 ORANGE = '#EC6A37'
+ISSUES = 'https://github.com/haretic/installer/issues'
 STEPS = ('Download', 'Connect', 'Check', 'Back up', 'Unlock', 'Install', 'Start')
 RESTORE_STEPS = ('Restore file', 'Connect', 'Check', 'Restore', 'Start')
 
@@ -463,7 +465,9 @@ class ErrorCard(QFrame):
         user stopped it, which is no error."""
         self.head.setText(head)
         self.text.setText(text)
-        self.hint.setText(hint or '')
+        # Links in hints open in the browser, in the accent colour
+        self.hint.setText(re.sub(r'(https://[^\s<]+[^\s<.,])', rf'<a href="\1" style="color: {ORANGE}">\1</a>',
+                                 hint or ''))
         self.hint.setVisible(bool(hint))
         self.safety.setText(
             'Nothing on the r1 was changed by this step. It is safe to unplug it.' if safe is True else
@@ -639,7 +643,7 @@ class Window(QWidget):
             text = str(e)
         else:
             text = f'Something unexpected happened: {type(e).__name__}: {e}'
-            hint = 'The details have the full error; please save the log and report it.'
+            hint = f'The details have the full error. Please save the log and report it at {ISSUES}.'
         if done:
             safe, hint = done, None
         self.stepper.set(self.stepper.current, failed=not calm)
