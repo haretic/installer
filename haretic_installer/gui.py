@@ -1323,24 +1323,26 @@ class Window(QWidget):
         self.step_safe = False
         p.done = []
 
+        def items(finished=False):
+            shown = p.done[-6:]
+            p.items.setText('<br>'.join(
+                f'<span style="color:{ORANGE}">&#8594;</span> <span style="color:#e8e8e8">{t}</span>'
+                if i == len(shown) - 1 and not finished else f'<span style="color:{ORANGE}">&#10003;</span> {t}'
+                for i, t in enumerate(shown)))
+
         def status(text):
-            if text.startswith('Writing '):
-                if p.done and p.done[-1] != text:
-                    pass
-                p.done.append(text[8:])
-                shown = p.done[-6:]
-                p.items.setText('<br>'.join((f'<span style="color:{ORANGE}">-</span> ' if i == len(shown) - 1
-                                             else '<span style="color:#6c6c6c">done</span> ') + t
-                                            for i, t in enumerate(shown)))
+            if text.startswith(('Writing ', 'Erasing ')):
+                p.done.append(text)
+                items()
 
         def ok(_):
-            p.progress.bar.setValue(1000)
+            p.progress.set(1, 1)
             p.progress.status.setText('Installed')
+            items(finished=True)
             self.start_boot()
         self.resume = self.start_install_writes
-        self.run(lambda job: self.with_reporter(job, self.session.install, self.pkg, self.mode,
-                                                        self.allow_downgrade), ok,
-                 p.progress, status=status)
+        self.run(lambda job: self.with_reporter(job, self.session.install, self.pkg, self.mode, self.allow_downgrade),
+                 ok, p.progress, status=status)
 
     # 8. start
     def page_done(self):

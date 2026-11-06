@@ -444,7 +444,7 @@ class Session:
         self.begin(total, 'Installing')
         for label, part, src, length in ops:
             offset, size = self.info.parts[part]
-            self.rep.status(f'Writing {label}')
+            self.rep.status(f'{"Erasing" if callable(src) else "Writing"} {label}')
             self.rep.log(f'write {part}')
             if src == 'sparse':
                 with pkg.open('super') as f:
