@@ -5,6 +5,7 @@ import json
 import lzma
 import os
 import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -465,6 +466,37 @@ class Names(unittest.TestCase):
                 t.addfile(info, __import__('io').BytesIO(blob))
             with self.assertRaisesRegex(package.PackageError, 'bootloader'):
                 package.Package(path)
+
+
+class RealDevice(unittest.TestCase):
+    def test_mtkclient_gets_the_gpt_settings_its_unlock_reads(self):
+        """seccfg('unlock') reads the GPT with config.gpt_settings, which only mtkclient's own command
+        line sets: without them unlocking stops with an AttributeError before it writes anything. In
+        its own process, as importing mtkclient detaches the test runner's stream."""
+        script = """
+import sys, tempfile
+from unittest import mock
+from haretic_installer.device import MtkDevice
+
+class Stop(Exception):
+    pass
+
+seen = {}
+
+def mtk(config, loglevel):
+    seen['config'] = config
+    raise Stop()
+
+with tempfile.TemporaryDirectory() as d, mock.patch('mtkclient.Library.mtk_class.Mtk', mtk):
+    try:
+        MtkDevice(d).connect(lambda status: None, lambda: False)
+    except Stop:
+        pass
+s = seen['config'].gpt_settings
+sys.exit(0 if (s.gpt_num_part_entries, s.gpt_part_entry_size, s.gpt_part_entry_start_lba) == (0, 0, 0) else 1)
+"""
+        run = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr[-500:])
 
 
 if __name__ == '__main__':

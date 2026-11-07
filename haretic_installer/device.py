@@ -88,11 +88,15 @@ class MtkDevice(_Sectors):
         from mtkclient.config.mtk_config import MtkConfig
         from mtkclient.Library.mtk_class import Mtk
         from mtkclient.Library.DA.mtk_da_handler import DaHandler
+        from mtkclient.Library.Partitions.gpt import GptSettings
         os.makedirs(self.workdir, exist_ok=True)
         config = MtkConfig(loglevel=logging.INFO, gui=None, guiprogress=None)
         config.hwparam_path = self.workdir
         config.reconnect = False
         config.write_preloader_to_file = False
+        # mtkclient's seccfg unlock reads the GPT with these; zeros, as its own command line
+        # defaults to, mean the sizes in the GPT header
+        config.gpt_settings = GptSettings(0, 0, 0)
         mtk = Mtk(config=config, loglevel=logging.INFO)
         cdc = mtk.port.cdc
         connect = cdc.connect
