@@ -90,7 +90,7 @@ class Info:
     def summary(self):
         return {'cid': self.identity['cid'], 'storage_gb': round(self.identity['user_size'] / 1e9),
                 'slot': self.slot, 'lock': self.lock, 'lk_a': self.lk['a'], 'lk_b': self.lk['b'],
-                'system': self.system, 'installed': self.installed}
+                'system': self.system, 'installed': self.installed, 'recovery': self.recovery}
 
 
 class Session:
@@ -193,7 +193,8 @@ class Session:
         slot = r1.record_slot(rec)
         installed = self.installed(slot) if lk.get(slot) == 'haretic' else None
         self.info = Info(identity=identity, parts=parts, gpt=raw, record=rec, slot=slot,
-                         lock=lock, lk=lk, seccfg_type=hwtype, installed=installed)
+                         lock=lock, lk=lk, seccfg_type=hwtype, installed=installed,
+                         recovery=r1.recovery_request(self.dev.read('user', para, r1.RECORD_OFFSET)))
         self.rep.log('found: ' + json.dumps(self.info.summary()))
         return self.info
 
@@ -396,7 +397,9 @@ class Session:
             if self.info.slot == 'b':
                 for name in r1.SLOT_FIRMWARE:
                     ops.append((f'{name} (from slot B)', name + '_a', ('copy', name + '_b'), None))
-            ops += [('the metadata partition', 'md_udc', z, None), ('old encryption keys', 'metadata', z, None),
+            # A request for recovery left by a start that failed would send the new system there too
+            ops += [('the last start\'s request for recovery', 'para', z, r1.RECORD_OFFSET),
+                    ('the metadata partition', 'md_udc', z, None), ('old encryption keys', 'metadata', z, None),
                     ('your data', 'userdata', z, 64 << 20), ('vendor_boot', 'vendor_boot_a', z, None),
                     ('init_boot', 'init_boot_a', z, None), ('dtbo', 'dtbo_a', pkg.read('dtbo'), None)]
         ops += [('Android (super)', 'super', 'sparse', None),

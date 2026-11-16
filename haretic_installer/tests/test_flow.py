@@ -155,8 +155,15 @@ class Flow(unittest.TestCase):
                     self.assertEqual(tar.extractfile(member).read(), before['seccfg'])
         self.assertTrue(s.unlock())
         self.assertEqual(r1.lock_state(self.part(dev, 'seccfg', 64)), 'unlocked')
+        # a start from empty data that failed left its request for recovery: found, and cleared
+        para = PLACE['para'][0]
+        dev.write(para, b'boot-recovery'.ljust(64, b'\0')
+                  + b'recovery\n--prompt_and_wipe_data\n--reason=set_policy_failed:/data/adb\n'.ljust(768, b'\0'))
+        self.assertEqual(r1.recovery_request(dev.read('user', para, r1.RECORD_OFFSET)), 'set_policy_failed:/data/adb')
         s.install(self.pkg, 'clean')
         self.assertEqual(s.done, s.total)  # the plan counts every byte moved, tee_b's 8 MiB too
+        self.assertEqual(dev.read('user', para, r1.RECORD_OFFSET), bytes(r1.RECORD_OFFSET))
+        self.assertIsNone(s.inspect(s.info.identity).recovery)
         self.install_checks(s, dev, before)
         # the slot the r1 ran keeps its firmware whole, the other gets it: tee_b's 3 MiB past tee_a stay
         ran, other = slot, 'ab'[slot == 'a']

@@ -104,6 +104,10 @@ def main(argv=None):
         print(f'\nrabbit r1: {info.identity["user_size"] / 1e9:.0f} GB, runs {info.system} on slot '
               f'{info.slot.upper()}, bootloader {info.lock}, loaders A {info.lk["a"]} / B {info.lk["b"]}'
               + (f', unlockable ({info.seccfg_type})' if info.seccfg_type else ''))
+        if info.recovery is not None:
+            print('It starts into recovery instead of its system'
+                  + (f': Android gave the reason "{info.recovery}".' if info.recovery else '.')
+                  + ' A clean install clears that.')
         if info.installed:
             print('installed: ' + ', '.join(f'{k} {v}' for k, v in info.installed.items() if v is not None))
         if args.cmd == 'backup':

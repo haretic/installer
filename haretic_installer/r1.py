@@ -127,6 +127,19 @@ def record_slot(rec):
     return 'ab'[slot]
 
 
+def recovery_request(bcb):
+    """Why the r1 goes to recovery instead of its system, from the bootloader message at the start
+    of para: None when it asks for no recovery, else the reason Android gave ('' if none), as
+    'set_policy_failed:/data/adb' when the start from empty data failed."""
+    if bytes(bcb[:32]).split(b'\0')[0] != b'boot-recovery':
+        return None
+    args = bytes(bcb[64:64 + 768]).split(b'\0')[0].decode('ascii', 'replace').split('\n')
+    for arg in args:
+        if arg.startswith('--reason='):
+            return arg[len('--reason='):]
+    return ''
+
+
 def activate_a(rec):
     """The record with slot A active, as the r1's boot HAL sets it (device/rabbit/r1 boot
     Control::SetActive): A at priority 15 with 6 tries, keeping its successful bit; B, if also
