@@ -86,6 +86,9 @@ def main(argv=None):
     if args.cmd == 'install':
         try:
             pkg = package.Package(args.package, paths.downloads())
+            if pkg.gapps and not confirm(f'{package.GAPPS_TITLE}. {package.GAPPS_WARNING}', args.yes):
+                print('Nothing was changed.')
+                return 0
             rep.status(f'Unpacking and checking {os.path.basename(args.package)}')
             pkg.verify(rep.progress)
         except package.PackageError as e:

@@ -807,6 +807,8 @@ class Window(QWidget):
             c.setEnabled(False)
             opts.addWidget(c)
             c.toggled.connect(lambda _: self.variant_text())
+        # A tick by the user, not one set by the code
+        p.gapps.clicked.connect(self.gapps_ticked)
         opts.addStretch(1)
         sl.addLayout(opts)
         p.variant = label('', 'small')
@@ -839,6 +841,15 @@ class Window(QWidget):
         for a, b in zip(order, order[1:]):
             QWidget.setTabOrder(a, b)
         return p
+
+    def gapps_ok(self):
+        """The warning before Google apps: True to go on with them. Leaving them out is the default."""
+        return self.ask(package.GAPPS_TITLE, package.GAPPS_WARNING, 'Use Google apps anyway',
+                        cancel='Leave them out')
+
+    def gapps_ticked(self, on):
+        if on and not self.gapps_ok():
+            self.p_welcome.gapps.setChecked(False)
 
     def look_again(self):
         p = self.p_welcome
@@ -887,6 +898,8 @@ class Window(QWidget):
             pkg = package.Package(path)
         except package.PackageError as e:
             QMessageBox.warning(self, paths.NAME, str(e))
+            return
+        if pkg.gapps and not self.gapps_ok():
             return
         self.pkg, self.pkg_path, self.verified = pkg, path, False
         p = self.p_welcome

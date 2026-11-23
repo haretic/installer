@@ -24,6 +24,15 @@ NAME = re.compile(r'^(?P<version>haretic-\d{8}(?:-\d{4})?-[a-z]+)(?P<aosp>-aosp)
 SUFFIX = '.tar.xz'
 
 
+# Shown before a package with Google apps is used: in the window when the box is ticked or such a
+# package file is chosen, on the command line before the install
+GAPPS_TITLE = 'Google apps are not recommended'
+GAPPS_WARNING = ('The r1 is not a Google Play certified device. Unless you register it with Google '
+                 'yourself, the Play Store and Google apps will not work properly. haretic is designed to '
+                 'be used without Google apps and comes with Aurora Store, which installs apps from '
+                 'Google Play without them.')
+
+
 def variant(gapps, root):
     return 'r1_b' + ('g' if gapps else 'v') + ('S' if root else 'N')
 
