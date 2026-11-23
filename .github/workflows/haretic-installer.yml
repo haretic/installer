@@ -150,7 +150,8 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
           python3 packaging/scripts/release-notes.py "$TAG" dist > release-notes.md
           flags=()
-          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease --latest=false); fi
+          # A suffix on the version (1.0.0-alpha) marks a prerelease; the tag name itself always has a hyphen
+          if [[ "${TAG#installer-v}" == *-* ]]; then flags+=(--prerelease --latest=false); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
