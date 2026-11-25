@@ -78,10 +78,17 @@ class MtkDevice(_Sectors):
         self.log = log
         self.mtk = None
         self.identity = None
-        handler = _Log(log)
-        handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
-        logging.getLogger().addHandler(handler)
-        logging.getLogger().setLevel(logging.INFO)
+        self._handler = _Log(log)
+        self._handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
+        self._listen()
+
+    def _listen(self):
+        """Have mtkclient's messages in the log. Each mtkclient class configures logging anew
+        when it is defined, which drops the root logger's handlers, this one included."""
+        root = logging.getLogger()
+        if self._handler not in root.handlers:
+            root.addHandler(self._handler)
+        root.setLevel(logging.INFO)
 
     def connect(self, status, cancelled):
         """Wait for the r1 and start the download agent on it. status(text) reports what happens."""
@@ -98,6 +105,7 @@ class MtkDevice(_Sectors):
         # defaults to, mean the sizes in the GPT header
         config.gpt_settings = GptSettings(0, 0, 0)
         mtk = Mtk(config=config, loglevel=logging.INFO)
+        self._listen()
         cdc = mtk.port.cdc
         connect = cdc.connect
         seen = [False]
@@ -106,10 +114,12 @@ class MtkDevice(_Sectors):
         def polled(*a, **k):
             if cancelled():
                 raise Cancelled()
+            self._listen()
             ok = connect(*a, **k)
-            if ok and not seen[0]:
-                seen[0] = True
-                status('found')
+            # Back to waiting when the r1 goes away again, as after a failed handshake
+            if bool(ok) != seen[0]:
+                seen[0] = bool(ok)
+                status('found' if ok else 'waiting')
             return ok
         cdc.connect = polled
         old = os.getcwd()
@@ -292,7 +302,9 @@ class SimDevice(_Sectors):
 
 def frozen_stdio(path):
     """A windowed build has no console: mtkclient prints, so give it somewhere to print."""
-    if sys.stdout is None or sys.stderr is None:
-        stream = open(path, 'a', buffering=1, encoding='utf-8', errors='replace')
-        sys.stdout = sys.stdout or stream
-        sys.stderr = sys.stderr or stream
+    # One stream each: mtkclient re-wraps both at import by detaching their buffers, and a
+    # stream shared by the two is already detached when the second one's turn comes
+    if sys.stdout is None:
+        sys.stdout = open(path, 'a', buffering=1, encoding='utf-8', errors='replace')
+    if sys.stderr is None:
+        sys.stderr = open(path, 'a', buffering=1, encoding='utf-8', errors='replace')

@@ -506,5 +506,39 @@ sys.exit(0 if (s.gpt_num_part_entries, s.gpt_part_entry_size, s.gpt_part_entry_s
         self.assertEqual(run.returncode, 0, run.stderr[-500:])
 
 
+class WindowedBuild(unittest.TestCase):
+    """What the windowed Windows build meets: no console, and mtkclient's own logging."""
+
+    def test_mtkclient_imports_without_a_console(self):
+        # mtkclient detaches and re-wraps stdout and stderr when it is imported
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with tempfile.TemporaryDirectory() as tmp:
+            done = os.path.join(tmp, 'done')
+            code = ('import sys; sys.stdout = None; sys.stderr = None\n'
+                    'from haretic_installer.device import frozen_stdio\n'
+                    f'frozen_stdio({os.path.join(tmp, "console.log")!r})\n'
+                    'import mtkclient.Library.utils\n'
+                    f'open({done!r}, "w").close()\n')
+            subprocess.run([sys.executable, '-c', code], cwd=root, timeout=120)
+            self.assertTrue(os.path.exists(done))
+
+    def test_log_survives_mtkclient_configuring_logging(self):
+        import logging
+        import logging.config
+        from haretic_installer.device import MtkDevice
+        lines = []
+        with tempfile.TemporaryDirectory() as tmp:
+            device = MtkDevice(tmp, lines.append)
+            try:
+                # as each mtkclient class does when it is defined
+                logging.config.dictConfig({'version': 1, 'disable_existing_loggers': False,
+                                           'loggers': {'': {'handlers': []}}})
+                device._listen()
+                logging.getLogger('Preloader').info('Handshake failed')
+                self.assertEqual(lines, ['Preloader: Handshake failed'])
+            finally:
+                logging.getLogger().removeHandler(device._handler)
+
+
 if __name__ == '__main__':
     unittest.main()
