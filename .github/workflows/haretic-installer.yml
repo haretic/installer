@@ -36,9 +36,9 @@ jobs:
           - {os: ubuntu-24.04-arm, target: linux, arch: arm64}
           - {os: windows-2022, target: windows, arch: x64}
           - {os: macos-15-intel, target: macos, arch: x64}
-          # macos-26 and macos-15 arm64 runners are rarely free: a job no runner takes is
-          # cancelled after 15 minutes
-          - {os: macos-14, target: macos, arch: arm64}
+          # macos-15 arm64 runners are rarely free and macos-14 arm64 is no longer offered; a job
+          # no runner takes is cancelled after 15 minutes
+          - {os: macos-26, target: macos, arch: arm64}
     runs-on: ${{ matrix.os }}
     env:
       ARCH: ${{ matrix.arch }}
