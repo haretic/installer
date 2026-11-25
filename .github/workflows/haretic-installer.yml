@@ -36,7 +36,9 @@ jobs:
           - {os: ubuntu-24.04-arm, target: linux, arch: arm64}
           - {os: windows-2022, target: windows, arch: x64}
           - {os: macos-15-intel, target: macos, arch: x64}
-          - {os: macos-26, target: macos, arch: arm64}  # macos-15 arm64 runners rarely free
+          # macos-26 and macos-15 arm64 runners are rarely free: a job no runner takes is
+          # cancelled after 15 minutes
+          - {os: macos-14, target: macos, arch: arm64}
     runs-on: ${{ matrix.os }}
     env:
       ARCH: ${{ matrix.arch }}
@@ -128,7 +130,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
   release:
-    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/installer-v') }}
+    # Only with every platform built: a cancelled build job is neither failure() nor cancelled()
+    # here, and a release once went out without its Apple Silicon download
+    if: ${{ always() && needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/installer-v') }}
     needs: build
     runs-on: ubuntu-22.04
     permissions:
